@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GHEval Map</title>
+    <link rel="stylesheet" href="lib/leaflet.css" />
+    <script src="lib/leaflet.js"></script>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <style>
+        * { margin: 0; padding: 0; }
+        html, body { width: 100%; height: 100%; overflow: hidden; }
+        #map { width: 100%; height: 100%; }
+        .site-marker-icon {
+            background: none;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+    var map, bridge, currentMarker, siteMarkers = {};
+    var osmLayer, satelliteLayer, hybridLayer;
+    var currentMapType = "ROADMAP";
+
+    // Fix default marker icon paths for local files
+    L.Icon.Default.prototype.options.iconUrl = 'lib/marker-icon.png';
+    L.Icon.Default.prototype.options.iconRetinaUrl = 'lib/marker-icon-2x.png';
+    L.Icon.Default.prototype.options.shadowUrl = 'lib/marker-shadow.png';
+
+    // Tile layers
+    osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19
+    });
+
+    satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '&copy; Esri',
+        maxZoom: 19
+    });
+
+    var labelLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19,
+        opacity: 0.4
+    });
+
+    // Initialize map
+    map = L.map('map', {
+        center: [37.5665, 126.9780],
+        zoom: 10,
+        layers: [osmLayer]
+    });
+
+    // Current click marker
+    currentMarker = null;
+
+    map.on('click', function(e) {
+        if (bridge) {
+            var data = JSON.stringify({
+                lat: e.latlng.lat,
+                lng: e.latlng.lng
+            });
+            bridge.on_map_clicked(data);
+        }
+    });
+
+    map.on('zoomend', function() {
+        if (bridge) {
+            bridge.on_zoom_changed(map.getZoom());
+        }
+    });
+
+    function changeMapType(mapType) {
+        currentMapType = mapType;
+        map.eachLayer(function(layer) {
+            if (layer === osmLayer || layer === satelliteLayer || layer === labelLayer) {
+                map.removeLayer(layer);
+            }
+        });
+        if (mapType === "ROADMAP") {
+            map.addLayer(osmLayer);
+        } else if (mapType === "SKYVIEW") {
+            map.addLayer(satelliteLayer);
+        } else if (mapType === "HYBRID") {
+            map.addLayer(satelliteLayer);
+            map.addLayer(labelLayer);
+        }
+    }
+
+    function moveToLocation(jsonStr) {
+        var data = JSON.parse(jsonStr);
+        var lat = data.lat || 37.5665;
+        var lng = data.lng || 126.9780;
+        var zoom = data.zoom || map.getZoom();
+        map.setView([lat, lng], zoom);
+    }
+
+    function addSiteMarker(jsonStr) {
+        var data = JSON.parse(jsonStr);
+        var id = data.id;
+        var lat = data.lat;
+        var lng = data.lng;
+        var name = data.name || "";
+
+        if (siteMarkers[id]) {
+            map.removeLayer(siteMarkers[id]);
+        }
+
+        var marker = L.marker([lat, lng]).addTo(map);
+        marker.bindTooltip(name);
+        marker.on('click', function() {
+            if (bridge) {
+                bridge.on_marker_clicked(JSON.stringify({id: id}));
+            }
+        });
+        siteMarkers[id] = marker;
+    }
+
+    function removeSiteMarker(idStr) {
+        var id = parseInt(idStr);
+        if (siteMarkers[id]) {
+            map.removeLayer(siteMarkers[id]);
+            delete siteMarkers[id];
+        }
+    }
+
+    function clearSiteMarkers() {
+        for (var id in siteMarkers) {
+            map.removeLayer(siteMarkers[id]);
+        }
+        siteMarkers = {};
+    }
+
+    function setClickMarker(jsonStr) {
+        var data = JSON.parse(jsonStr);
+        if (currentMarker) {
+            map.removeLayer(currentMarker);
+        }
+        currentMarker = L.marker([data.lat, data.lng]).addTo(map);
+    }
+
+    function clearClickMarker() {
+        if (currentMarker) {
+            map.removeLayer(currentMarker);
+            currentMarker = null;
+        }
+    }
+
+    // Initialize QWebChannel bridge
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+        bridge = channel.objects.bridge;
+
+        bridge.move_to_location.connect(function(jsonStr) {
+            moveToLocation(jsonStr);
+        });
+
+        bridge.change_map_type.connect(function(mapType) {
+            changeMapType(mapType);
+        });
+
+        bridge.add_site_marker.connect(function(jsonStr) {
+            addSiteMarker(jsonStr);
+        });
+
+        bridge.remove_site_marker.connect(function(idStr) {
+            removeSiteMarker(idStr);
+        });
+
+        bridge.clear_site_markers.connect(function() {
+            clearSiteMarkers();
+        });
+
+        bridge.set_click_marker.connect(function(jsonStr) {
+            setClickMarker(jsonStr);
+        });
+
+        bridge.clear_click_marker.connect(function() {
+            clearClickMarker();
+        });
+
+        bridge.on_map_ready();
+    });
+</script>
+</body>
+</html>
