@@ -1,7 +1,7 @@
 import logging
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QToolBar, QStatusBar,
+    QMainWindow, QToolBar, QStatusBar, QLabel, QComboBox,
     QSplitter, QWidget, QVBoxLayout, QMessageBox,
     QTabWidget,
 )
@@ -119,6 +119,14 @@ class GhEvalMainWindow(QMainWindow):
         toolbar.addAction(self.action_save_site)
         toolbar.addAction(self.action_delete_site)
         toolbar.addSeparator()
+
+        toolbar.addWidget(QLabel(" Map: "))
+        self.map_type_combo = QComboBox()
+        self.map_type_combo.addItems(MAP_TYPES)
+        self.map_type_combo.currentTextChanged.connect(self._on_map_type_combo_changed)
+        toolbar.addWidget(self.map_type_combo)
+
+        toolbar.addSeparator()
         toolbar.addAction(self.action_capture)
 
     # ── Statusbar ────────────────────────────────────────────
@@ -188,11 +196,13 @@ class GhEvalMainWindow(QMainWindow):
 
         self.site_list.site_selected.connect(self._on_site_selected)
         self.map_widget.map_clicked.connect(self._on_map_clicked)
+        self.map_widget.add_site_requested.connect(self._on_add_site_at)
         self.map_widget.zoom_changed.connect(self._on_zoom_changed)
         self.map_widget.map_ready.connect(self._on_map_ready)
         self.map_widget.marker_clicked.connect(self._on_marker_clicked)
         self.map_widget.screenshot_saved.connect(
-            lambda path: self.statusbar.showMessage(f"Screenshot saved: {path}", 5000)
+            lambda path: self._capture_screenshot() if not path else
+            self.statusbar.showMessage(f"Screenshot saved: {path}", 5000)
         )
         self.eval_panel.evaluation_saved.connect(
             lambda: self.statusbar.showMessage("Evaluation saved.", 3000)
@@ -224,6 +234,16 @@ class GhEvalMainWindow(QMainWindow):
     def _on_map_clicked(self, lat, lng):
         self.statusbar.showMessage(f"Clicked: {lat:.6f}, {lng:.6f}")
 
+    def _on_add_site_at(self, lat, lng):
+        dialog = SiteEditDialog(self, lat=lat, lng=lng)
+        if dialog.exec():
+            data = dialog.get_site_data()
+            site = GeoHeritageSite.create(**data)
+            self.site_list.load_sites()
+            self.site_list.select_site_by_id(site.id)
+            self._refresh_markers()
+            self.statusbar.showMessage(f"Created site: {site.site_name}", 3000)
+
     def _on_zoom_changed(self, zoom):
         current_msg = self.statusbar.currentMessage()
         if "|" in current_msg:
@@ -237,6 +257,16 @@ class GhEvalMainWindow(QMainWindow):
         action = self.map_type_group.checkedAction()
         if action:
             self.map_widget.set_map_type(action.data())
+            self.map_type_combo.blockSignals(True)
+            self.map_type_combo.setCurrentText(action.data())
+            self.map_type_combo.blockSignals(False)
+
+    def _on_map_type_combo_changed(self, map_type):
+        self.map_widget.set_map_type(map_type)
+        for action in self.map_type_actions:
+            if action.data() == map_type:
+                action.setChecked(True)
+                break
 
     # ── Site operations ──────────────────────────────────────
 

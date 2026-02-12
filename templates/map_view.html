@@ -25,9 +25,12 @@
     var currentMapType = "ROADMAP";
 
     // Fix default marker icon paths for local files
-    L.Icon.Default.prototype.options.iconUrl = 'lib/marker-icon.png';
-    L.Icon.Default.prototype.options.iconRetinaUrl = 'lib/marker-icon-2x.png';
-    L.Icon.Default.prototype.options.shadowUrl = 'lib/marker-shadow.png';
+    delete L.Icon.Default.prototype._getIconUrl;
+    L.Icon.Default.mergeOptions({
+        iconUrl: 'lib/marker-icon.png',
+        iconRetinaUrl: 'lib/marker-icon-2x.png',
+        shadowUrl: 'lib/marker-shadow.png'
+    });
 
     // Tile layers
     osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -63,6 +66,16 @@
                 lng: e.latlng.lng
             });
             bridge.on_map_clicked(data);
+        }
+    });
+
+    map.on('contextmenu', function(e) {
+        if (bridge) {
+            var data = JSON.stringify({
+                lat: e.latlng.lat,
+                lng: e.latlng.lng
+            });
+            bridge.on_map_right_clicked(data);
         }
     });
 

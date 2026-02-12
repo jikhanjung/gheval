@@ -17,6 +17,7 @@ class MapBridge(QObject):
     # Internal signals for Python-side consumers
     map_ready = pyqtSignal()
     map_clicked = pyqtSignal(float, float)
+    map_right_clicked = pyqtSignal(float, float)
     zoom_changed = pyqtSignal(int)
     marker_clicked = pyqtSignal(int)
 
@@ -28,6 +29,12 @@ class MapBridge(QObject):
         """Called from JS when map is clicked."""
         data = json.loads(json_str)
         self.map_clicked.emit(data["lat"], data["lng"])
+
+    @pyqtSlot(str)
+    def on_map_right_clicked(self, json_str):
+        """Called from JS when map is right-clicked."""
+        data = json.loads(json_str)
+        self.map_right_clicked.emit(data["lat"], data["lng"])
 
     @pyqtSlot()
     def on_map_ready(self):

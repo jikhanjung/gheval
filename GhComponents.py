@@ -6,10 +6,11 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QSlider, QPushButton, QGroupBox, QFormLayout, QTextEdit,
     QComboBox, QSpinBox, QFileDialog, QScrollArea, QGridLayout,
-    QSplitter, QFrame, QTabWidget, QLineEdit, QMessageBox,
+    QSplitter, QFrame, QTabWidget, QLineEdit, QMessageBox, QMenu,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage, QCursor
+from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 
@@ -28,6 +29,8 @@ class MapWidget(QWidget):
     """Map display widget using QWebEngineView with Leaflet/OSM."""
 
     map_clicked = pyqtSignal(float, float)
+    map_right_clicked = pyqtSignal(float, float)
+    add_site_requested = pyqtSignal(float, float)
     zoom_changed = pyqtSignal(int)
     map_ready = pyqtSignal()
     marker_clicked = pyqtSignal(int)
@@ -43,12 +46,23 @@ class MapWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.web_view = QWebEngineView()
+
+        # Allow local HTML to load remote tile servers
+        settings = self.web_view.page().settings()
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+        )
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True
+        )
+
         self.bridge = MapBridge(self)
         self.channel = QWebChannel()
         self.channel.registerObject("bridge", self.bridge)
         self.web_view.page().setWebChannel(self.channel)
 
         self.bridge.map_clicked.connect(self._on_map_clicked)
+        self.bridge.map_right_clicked.connect(self._on_map_right_clicked)
         self.bridge.zoom_changed.connect(self._on_zoom_changed)
         self.bridge.map_ready.connect(self._on_map_ready)
         self.bridge.marker_clicked.connect(self.marker_clicked.emit)
@@ -60,6 +74,18 @@ class MapWidget(QWidget):
 
     def _on_map_clicked(self, lat, lng):
         self.map_clicked.emit(lat, lng)
+
+    def _on_map_right_clicked(self, lat, lng):
+        self.map_right_clicked.emit(lat, lng)
+        menu = QMenu(self)
+        add_action = menu.addAction("Add Site Here")
+        menu.addSeparator()
+        capture_action = menu.addAction("Capture Screenshot")
+        action = menu.exec(QCursor.pos())
+        if action == add_action:
+            self.add_site_requested.emit(lat, lng)
+        elif action == capture_action:
+            self.screenshot_saved.emit("")  # trigger via main window
 
     def _on_zoom_changed(self, zoom):
         self.current_zoom = zoom
