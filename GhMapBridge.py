@@ -13,6 +13,8 @@ class MapBridge(QObject):
     clear_site_markers = pyqtSignal()
     set_click_marker = pyqtSignal(str)
     clear_click_marker = pyqtSignal()
+    show_road_line = pyqtSignal(str)
+    clear_road_line = pyqtSignal()
 
     # Internal signals for Python-side consumers
     map_ready = pyqtSignal()
@@ -83,3 +85,15 @@ class MapBridge(QObject):
     def hide_click_marker(self):
         """Hide the temporary click marker."""
         self.clear_click_marker.emit()
+
+    def draw_road_line(self, site_lat, site_lng, road_lat, road_lng):
+        """Draw a line from site to nearest road point."""
+        data = {
+            "site_lat": site_lat, "site_lng": site_lng,
+            "road_lat": road_lat, "road_lng": road_lng,
+        }
+        self.show_road_line.emit(json.dumps(data))
+
+    def remove_road_line(self):
+        """Remove the road distance line."""
+        self.clear_road_line.emit()

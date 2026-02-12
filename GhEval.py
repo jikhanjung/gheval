@@ -46,10 +46,6 @@ class GhEvalMainWindow(QMainWindow):
         self.action_new_site.setShortcut(QKeySequence("Ctrl+N"))
         self.action_new_site.setStatusTip("Create a new geoheritage site")
 
-        self.action_save_site = QAction("&Save Site", self)
-        self.action_save_site.setShortcut(QKeySequence("Ctrl+S"))
-        self.action_save_site.setStatusTip("Save current site")
-
         self.action_delete_site = QAction("&Delete Site", self)
         self.action_delete_site.setStatusTip("Delete selected site")
 
@@ -77,7 +73,6 @@ class GhEvalMainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.action_new_site)
-        file_menu.addAction(self.action_save_site)
         file_menu.addAction(self.action_delete_site)
         file_menu.addSeparator()
         file_menu.addAction(self.action_export_report)
@@ -116,7 +111,6 @@ class GhEvalMainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         toolbar.addAction(self.action_new_site)
-        toolbar.addAction(self.action_save_site)
         toolbar.addAction(self.action_delete_site)
         toolbar.addSeparator()
 
@@ -176,8 +170,9 @@ class GhEvalMainWindow(QMainWindow):
         self.tab_widget.addTab(self.photo_gallery, "Photos")
 
         self.v_splitter.addWidget(self.tab_widget)
-        self.v_splitter.setStretchFactor(0, 3)
+        self.v_splitter.setStretchFactor(0, 5)
         self.v_splitter.setStretchFactor(1, 1)
+        self.v_splitter.setSizes([600, 160])
 
         main_layout.addWidget(self.v_splitter)
 
@@ -188,7 +183,6 @@ class GhEvalMainWindow(QMainWindow):
 
     def _connect_signals(self):
         self.action_new_site.triggered.connect(self._new_site)
-        self.action_save_site.triggered.connect(self._edit_current_site)
         self.action_delete_site.triggered.connect(self._delete_site)
         self.action_capture.triggered.connect(self._capture_screenshot)
         self.action_settings.triggered.connect(self._open_settings)
@@ -204,9 +198,12 @@ class GhEvalMainWindow(QMainWindow):
             lambda path: self._capture_screenshot() if not path else
             self.statusbar.showMessage(f"Screenshot saved: {path}", 5000)
         )
+        self.info_panel.site_updated.connect(self._on_site_info_updated)
         self.eval_panel.evaluation_saved.connect(
             lambda: self.statusbar.showMessage("Evaluation saved.", 3000)
         )
+        self.eval_panel.road_line_requested.connect(self.map_widget.show_road_line)
+        self.eval_panel.road_line_cleared.connect(self.map_widget.clear_road_line)
 
     # ── Event handlers ───────────────────────────────────────
 
@@ -280,20 +277,15 @@ class GhEvalMainWindow(QMainWindow):
             self._refresh_markers()
             self.statusbar.showMessage(f"Created site: {site.site_name}", 3000)
 
-    def _edit_current_site(self):
+    def _on_site_info_updated(self):
         if not self.current_site:
-            QMessageBox.information(self, "Info", "No site selected to edit.")
             return
-        dialog = SiteEditDialog(self, site=self.current_site)
-        if dialog.exec():
-            data = dialog.get_site_data()
-            for key, value in data.items():
-                setattr(self.current_site, key, value)
-            self.current_site.save()
-            self.site_list.load_sites()
-            self.site_list.select_site_by_id(self.current_site.id)
-            self._refresh_markers()
-            self.statusbar.showMessage(f"Updated site: {self.current_site.site_name}", 3000)
+        site_id = self.current_site.id
+        self.site_list.list_widget.blockSignals(True)
+        self.site_list.load_sites()
+        self.site_list.select_site_by_id(site_id)
+        self.site_list.list_widget.blockSignals(False)
+        self._refresh_markers()
 
     def _delete_site(self):
         if not self.current_site:

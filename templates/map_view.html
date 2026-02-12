@@ -23,6 +23,7 @@
     var map, bridge, currentMarker, siteMarkers = {};
     var osmLayer, satelliteLayer, hybridLayer;
     var currentMapType = "ROADMAP";
+    var roadLine = null, roadEndMarker = null;
 
     // Fix default marker icon paths for local files
     delete L.Icon.Default.prototype._getIconUrl;
@@ -161,6 +162,23 @@
         }
     }
 
+    function showRoadLine(jsonStr) {
+        var data = JSON.parse(jsonStr);
+        clearRoadLine();
+        roadLine = L.polyline(
+            [[data.site_lat, data.site_lng], [data.road_lat, data.road_lng]],
+            {color: 'red', weight: 2, dashArray: '6, 4'}
+        ).addTo(map);
+        roadEndMarker = L.circleMarker([data.road_lat, data.road_lng], {
+            radius: 5, color: 'red', fillColor: 'red', fillOpacity: 0.8
+        }).addTo(map);
+    }
+
+    function clearRoadLine() {
+        if (roadLine) { map.removeLayer(roadLine); roadLine = null; }
+        if (roadEndMarker) { map.removeLayer(roadEndMarker); roadEndMarker = null; }
+    }
+
     // Initialize QWebChannel bridge
     new QWebChannel(qt.webChannelTransport, function(channel) {
         bridge = channel.objects.bridge;
@@ -191,6 +209,14 @@
 
         bridge.clear_click_marker.connect(function() {
             clearClickMarker();
+        });
+
+        bridge.show_road_line.connect(function(jsonStr) {
+            showRoadLine(jsonStr);
+        });
+
+        bridge.clear_road_line.connect(function() {
+            clearRoadLine();
         });
 
         bridge.on_map_ready();
