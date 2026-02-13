@@ -409,16 +409,17 @@ class EvaluationPanel(QWidget):
         self._road_worker = None
         self._landcover_worker = None
 
-        # Grid for sliders (some hidden but kept in hierarchy for data)
-        slider_grid = QGridLayout()
-        slider_grid.setSpacing(4)
+        # ── Row 1: Sliders side by side ──
+        slider_row = QHBoxLayout()
+        slider_row.setSpacing(4)
         for idx, (key, label, tooltip) in enumerate(self.CRITERIA):
             group = QGroupBox(label)
             group.setToolTip(tooltip)
             group_layout = QVBoxLayout(group)
             group_layout.setContentsMargins(6, 2, 6, 2)
+            group_layout.setSpacing(2)
 
-            slider_row = QHBoxLayout()
+            s_row = QHBoxLayout()
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setMinimum(1)
             slider.setMaximum(5)
@@ -431,14 +432,14 @@ class EvaluationPanel(QWidget):
             value_label = QLabel("1")
             slider.valueChanged.connect(lambda v, lbl=value_label: lbl.setText(str(v)))
 
-            slider_row.addWidget(slider)
-            slider_row.addWidget(value_label)
-            group_layout.addLayout(slider_row)
+            s_row.addWidget(slider)
+            s_row.addWidget(value_label)
+            group_layout.addLayout(s_row)
 
             if key == "road_proximity":
                 measure_row = QHBoxLayout()
                 self.measure_btn = QPushButton("Measure")
-                self.measure_btn.setToolTip("Auto-measure distance to nearest road via OSRM")
+                self.measure_btn.setToolTip("Auto-measure distance to nearest road")
                 self.measure_btn.clicked.connect(self._measure_road_distance)
                 self.road_distance_label = QLabel("")
                 measure_row.addWidget(self.measure_btn)
@@ -446,86 +447,93 @@ class EvaluationPanel(QWidget):
                 group_layout.addLayout(measure_row)
 
             self.sliders[key] = slider
-            slider_grid.addWidget(group, idx // 2, idx % 2)
             if key in ("accessibility", "development_signs"):
                 group.setVisible(False)
+            slider_row.addWidget(group)
 
-        layout.addLayout(slider_grid)
+        layout.addLayout(slider_row)
 
-        # Land Cover Analysis section
+        # ── Row 2: Land Cover Analysis (compact) ──
         lc_group = QGroupBox("Land Cover Analysis")
-        lc_layout = QVBoxLayout(lc_group)
+        lc_layout = QHBoxLayout(lc_group)
         lc_layout.setContentsMargins(6, 2, 6, 2)
-        lc_layout.setSpacing(4)
+        lc_layout.setSpacing(8)
 
-        lc_controls = QHBoxLayout()
-        lc_controls.addWidget(QLabel("Radius:"))
+        # Left column: controls
+        lc_ctrl = QVBoxLayout()
+        lc_ctrl.setSpacing(2)
+        radius_row = QHBoxLayout()
+        radius_row.addWidget(QLabel("Radius:"))
         self.lc_radius_combo = QComboBox()
         self.lc_radius_combo.addItems(["250m", "500m", "1km"])
-        self.lc_radius_combo.setCurrentIndex(1)  # 500m default
-        lc_controls.addWidget(self.lc_radius_combo)
+        self.lc_radius_combo.setCurrentIndex(1)
+        radius_row.addWidget(self.lc_radius_combo)
+        lc_ctrl.addLayout(radius_row)
         self.lc_analyze_btn = QPushButton("Analyze")
         self.lc_analyze_btn.setToolTip("Analyze land cover from satellite imagery")
         self.lc_analyze_btn.clicked.connect(self._request_landcover_analysis)
-        lc_controls.addWidget(self.lc_analyze_btn)
+        lc_ctrl.addWidget(self.lc_analyze_btn)
         self.lc_status_label = QLabel("")
-        lc_controls.addWidget(self.lc_status_label, 1)
-        lc_layout.addLayout(lc_controls)
+        lc_ctrl.addWidget(self.lc_status_label)
+        lc_ctrl.addStretch()
+        lc_layout.addLayout(lc_ctrl)
 
-        # Result bars
+        # Right: result bars in 2 columns
         self.lc_labels = {}
         self.lc_bars = {}
         lc_result_grid = QGridLayout()
         lc_result_grid.setSpacing(2)
         lc_classes = [
-            ("dense_veg", "Dense Vegetation", "#228B22"),
-            ("sparse_veg", "Sparse Vegetation", "#90EE90"),
-            ("bare", "Bare Rock/Soil", "#D2B48C"),
-            ("built", "Built-up/Paved", "#808080"),
+            ("dense_veg", "Dense Veg.", "#228B22"),
+            ("sparse_veg", "Sparse Veg.", "#90EE90"),
+            ("bare", "Bare/Soil", "#D2B48C"),
+            ("built", "Built-up", "#808080"),
             ("water", "Water", "#4169E1"),
         ]
-        for row, (key, label, color) in enumerate(lc_classes):
+        for i, (key, label, color) in enumerate(lc_classes):
+            col_base = (i // 3) * 3  # 0 or 3
+            row = i % 3
+
             name_label = QLabel(label)
-            name_label.setMinimumWidth(110)
-            lc_result_grid.addWidget(name_label, row, 0)
+            lc_result_grid.addWidget(name_label, row, col_base)
 
             bar = QFrame()
-            bar.setFixedHeight(14)
+            bar.setFixedHeight(12)
             bar.setStyleSheet(f"background-color: {color}; border-radius: 2px;")
             bar.setMinimumWidth(0)
             bar.setMaximumWidth(0)
-            lc_result_grid.addWidget(bar, row, 1)
+            lc_result_grid.addWidget(bar, row, col_base + 1)
             self.lc_bars[key] = bar
 
             pct_label = QLabel("")
-            pct_label.setMinimumWidth(35)
-            lc_result_grid.addWidget(pct_label, row, 2)
+            pct_label.setMinimumWidth(32)
+            lc_result_grid.addWidget(pct_label, row, col_base + 2)
             self.lc_labels[key] = pct_label
 
         lc_result_grid.setColumnStretch(1, 1)
-        lc_layout.addLayout(lc_result_grid)
+        lc_result_grid.setColumnStretch(4, 1)
+        lc_layout.addLayout(lc_result_grid, 1)
         layout.addWidget(lc_group)
 
-        # Bottom row: risk display + notes
+        # ── Row 3: Risk + Notes ──
         bottom_layout = QHBoxLayout()
         bottom_layout.setSpacing(4)
 
-        # Risk display
         risk_group = QGroupBox("Overall Risk")
         risk_layout = QHBoxLayout(risk_group)
         risk_layout.setContentsMargins(6, 2, 6, 2)
-        self.risk_score_label = QLabel("Score: 4")
+        self.risk_score_label = QLabel("Score: 2")
         self.risk_level_label = QLabel("Level: LOW")
         self.risk_level_label.setStyleSheet("font-weight: bold;")
         risk_layout.addWidget(self.risk_score_label)
         risk_layout.addWidget(self.risk_level_label)
         bottom_layout.addWidget(risk_group)
 
-        # Notes
         notes_group = QGroupBox("Evaluator Notes")
         notes_layout = QVBoxLayout(notes_group)
         notes_layout.setContentsMargins(6, 2, 6, 2)
         self.notes_text = QTextEdit()
+        self.notes_text.setMaximumHeight(60)
         self.notes_text.textChanged.connect(self._auto_save)
         notes_layout.addWidget(self.notes_text)
         bottom_layout.addWidget(notes_group, 1)
