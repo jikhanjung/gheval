@@ -19,10 +19,10 @@ MAP_TYPES = ["ROADMAP", "SKYVIEW", "SKYVIEW (Summer)", "HYBRID"]
 WAYBACK_CONFIG_URL = "https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json"
 
 RISK_LEVELS = {
-    "LOW": (4, 8),
-    "MODERATE": (9, 12),
-    "HIGH": (13, 16),
-    "CRITICAL": (17, 20),
+    "LOW": (2, 4),
+    "MODERATE": (5, 6),
+    "HIGH": (7, 8),
+    "CRITICAL": (9, 10),
 }
 
 DEFAULT_LATITUDE = 37.5665
@@ -69,9 +69,9 @@ def get_photos_dir():
     return d
 
 
-def calculate_risk_score(road_proximity, accessibility, vegetation_cover, development_signs):
-    """Calculate overall risk score from 4 evaluation criteria (each 1-5)."""
-    return road_proximity + accessibility + vegetation_cover + development_signs
+def calculate_risk_score(road_proximity, vegetation_cover, **_kwargs):
+    """Calculate overall risk score from 2 evaluation criteria (each 1-5)."""
+    return road_proximity + vegetation_cover
 
 
 def get_risk_level(score):
@@ -80,6 +80,137 @@ def get_risk_level(score):
         if low <= score <= high:
             return level
     return "CRITICAL"
+
+
+def parse_coordinates(text):
+    """Parse various coordinate formats and return (lat, lng) or None.
+
+    Supported formats:
+      37.5665, 126.9780              (decimal, comma-separated)
+      37.5665 126.9780               (decimal, space-separated)
+      37.5665N 126.9780E             (decimal with direction)
+      N37.5665 E126.9780             (direction prefix)
+      37°33'59.4"N 126°58'40.8"E    (DMS)
+      37°33.990'N 126°58.680'E      (degrees decimal minutes)
+      37 33 59.4 N, 126 58 40.8 E   (DMS with spaces)
+    """
+    text = text.strip()
+    if not text:
+        return None
+
+    # Split into two coordinate parts
+    parts = _split_coord_text(text)
+    if not parts:
+        return None
+
+    coords = []
+    for p in parts:
+        result = _parse_single_coord(p.strip())
+        if result is None:
+            return None
+        coords.append(result)
+
+    v1, d1 = coords[0]
+    v2, d2 = coords[1]
+
+    # If first has E/W or second has N/S, swap
+    if d1 in ("E", "W") and d2 not in ("E", "W"):
+        return v2, v1
+    if d2 in ("N", "S") and d1 not in ("N", "S"):
+        return v2, v1
+    return v1, v2
+
+
+def _split_coord_text(text):
+    """Split coordinate text into exactly two parts."""
+    # Try comma/semicolon first
+    for sep in (",", ";"):
+        if sep in text:
+            parts = [p.strip() for p in text.split(sep, 1)]
+            if len(parts) == 2 and parts[0] and parts[1]:
+                return parts
+
+    # Split after direction letter followed by whitespace
+    m = re.match(r"(.+?[NSEWnsew])\s+(.+)", text)
+    if m:
+        return [m.group(1), m.group(2)]
+
+    # Tab-separated
+    if "\t" in text:
+        parts = [p.strip() for p in text.split("\t", 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return parts
+
+    # Simple space-separated (two tokens only)
+    parts = text.split()
+    if len(parts) == 2:
+        return parts
+
+    return None
+
+
+def _parse_single_coord(text):
+    """Parse one coordinate component. Returns (value, direction_letter) or None."""
+    text = text.strip()
+
+    # Extract direction letter (prefix or suffix)
+    direction = ""
+    m = re.match(r"^([NSEWnsew])\s*(.*)", text)
+    if m:
+        direction = m.group(1).upper()
+        text = m.group(2).strip()
+    else:
+        m = re.match(r"(.*?)\s*([NSEWnsew])$", text)
+        if m:
+            text = m.group(1).strip()
+            direction = m.group(2).upper()
+
+    # DMS: 37°33'59.4"
+    SEC_MARK = r'[\"\u2033\u201d]'  # ", ″, "
+    MIN_MARK = r'[\'\u2032\u2019]'  # ', ′, '
+    m = re.match(
+        r"(-?)(\d{1,3})\s*°\s*(\d{1,2})\s*" + MIN_MARK + r"\s*"
+        r"(\d{1,2}(?:\.\d+)?)\s*" + SEC_MARK + r"?$",
+        text,
+    )
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        val = sign * (float(m.group(2)) + float(m.group(3)) / 60 + float(m.group(4)) / 3600)
+        if direction in ("S", "W"):
+            val = -abs(val)
+        return (val, direction)
+
+    # DDM: 37°33.990'
+    END_MARK = r'[\'\u2032\"\u2033\u201d\u2019]'
+    m = re.match(
+        r"(-?)(\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)\s*" + END_MARK + r"?$",
+        text,
+    )
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        val = sign * (float(m.group(2)) + float(m.group(3)) / 60)
+        if direction in ("S", "W"):
+            val = -abs(val)
+        return (val, direction)
+
+    # DMS with spaces: 37 33 59.4
+    m = re.match(r"(-?)(\d{1,3})\s+(\d{1,2})\s+(\d{1,2}(?:\.\d+)?)$", text)
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        val = sign * (float(m.group(2)) + float(m.group(3)) / 60 + float(m.group(4)) / 3600)
+        if direction in ("S", "W"):
+            val = -abs(val)
+        return (val, direction)
+
+    # Decimal: 37.5665 or -37.5665
+    m = re.match(r"(-?\d+\.?\d*)\s*°?$", text)
+    if m:
+        val = float(m.group(1))
+        if direction in ("S", "W"):
+            val = -abs(val)
+        return (val, direction)
+
+    return None
 
 
 def fetch_road_distance(lat, lng, timeout=20):

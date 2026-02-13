@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, QSettings
 
 from GhCommons import (
     COMPANY_NAME, PROGRAM_NAME, DEFAULT_LATITUDE, DEFAULT_LONGITUDE,
-    calculate_risk_score, get_risk_level,
+    calculate_risk_score, get_risk_level, parse_coordinates,
 )
 from GhModels import GeoHeritageSite, RiskEvaluation, SiteScreenshot, SitePhoto
 
@@ -31,6 +31,19 @@ class SiteEditDialog(QDialog):
 
         self.name_edit = QLineEdit()
         layout.addRow("Site Name:", self.name_edit)
+
+        # Coordinate paste input
+        coord_input_layout = QHBoxLayout()
+        self.coord_input = QLineEdit()
+        self.coord_input.setPlaceholderText(
+            "e.g. 37.5665, 126.978  or  37°33'59\"N 126°58'41\"E"
+        )
+        self.coord_input.returnPressed.connect(self._apply_coord_input)
+        coord_input_layout.addWidget(self.coord_input, 1)
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self._apply_coord_input)
+        coord_input_layout.addWidget(apply_btn)
+        layout.addRow("Coords Input:", coord_input_layout)
 
         coord_layout = QHBoxLayout()
         self.lat_spin = QDoubleSpinBox()
@@ -77,6 +90,18 @@ class SiteEditDialog(QDialog):
         elif lat is not None and lng is not None:
             self.lat_spin.setValue(lat)
             self.lng_spin.setValue(lng)
+
+    def _apply_coord_input(self):
+        text = self.coord_input.text().strip()
+        if not text:
+            return
+        result = parse_coordinates(text)
+        if result:
+            self.lat_spin.setValue(result[0])
+            self.lng_spin.setValue(result[1])
+            self.coord_input.setStyleSheet("")
+        else:
+            self.coord_input.setStyleSheet("border: 1px solid red;")
 
     def _validate_and_accept(self):
         name = self.name_edit.text().strip()
