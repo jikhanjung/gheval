@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QDoubleSpinBox, QComboBox, QPushButton, QLabel,
     QDialogButtonBox, QMessageBox, QGroupBox, QFileDialog,
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
+    QProgressBar, QWidget, QListWidget,
 )
 from PyQt6.QtCore import Qt, QSettings
 
@@ -284,3 +285,301 @@ class ReportDialog(QDialog):
             json.dump(self.report_data, f, ensure_ascii=False, indent=2)
 
         QMessageBox.information(self, "Export", f"Report exported to {path}")
+
+
+class PdfImportDialog(QDialog):
+    """Dialog for extracting and importing coordinates from PDF files."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Import Sites from PDF")
+        self.setMinimumSize(850, 550)
+        self.setAcceptDrops(True)
+        self._pdf_paths = []
+        self._worker = None
+        self._imported_site_ids = []
+
+        layout = QVBoxLayout(self)
+
+        # ── File selection bar ───────────────────────────
+        file_bar = QHBoxLayout()
+        add_files_btn = QPushButton("Add Files...")
+        add_files_btn.clicked.connect(self._add_files)
+        file_bar.addWidget(add_files_btn)
+
+        add_folder_btn = QPushButton("Add Folder...")
+        add_folder_btn.clicked.connect(self._add_folder)
+        file_bar.addWidget(add_folder_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self._clear_files)
+        file_bar.addWidget(clear_btn)
+
+        file_bar.addStretch()
+        self._file_count_label = QLabel("No files selected")
+        file_bar.addWidget(self._file_count_label)
+
+        self._process_btn = QPushButton("Process")
+        self._process_btn.clicked.connect(self._start_processing)
+        self._process_btn.setEnabled(False)
+        file_bar.addWidget(self._process_btn)
+
+        layout.addLayout(file_bar)
+
+        # ── File list ────────────────────────────────────
+        self._file_list = QListWidget()
+        self._file_list.setMaximumHeight(100)
+        self._file_list.setAlternatingRowColors(True)
+        layout.addWidget(self._file_list)
+
+        # ── Progress bar (hidden until processing) ───────
+        self._progress_widget = QWidget()
+        progress_layout = QHBoxLayout(self._progress_widget)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        self._progress_bar = QProgressBar()
+        progress_layout.addWidget(self._progress_bar, 1)
+        self._progress_label = QLabel("")
+        progress_layout.addWidget(self._progress_label)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self._cancel_processing)
+        self._cancel_btn = cancel_btn
+        progress_layout.addWidget(cancel_btn)
+        self._progress_widget.setVisible(False)
+        layout.addWidget(self._progress_widget)
+
+        # ── Results table ────────────────────────────────
+        self._table = QTableWidget()
+        self._table.setColumnCount(7)
+        self._table.setHorizontalHeaderLabels([
+            "", "Site Name", "Latitude", "Longitude", "Source PDF", "Page", "Context"
+        ])
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self._table.setColumnWidth(1, 200)
+        self._table.setColumnWidth(4, 150)
+        layout.addWidget(self._table, 1)
+
+        # ── Summary bar ──────────────────────────────────
+        summary_bar = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(lambda: self._set_all_checked(True))
+        summary_bar.addWidget(select_all_btn)
+
+        deselect_all_btn = QPushButton("Deselect All")
+        deselect_all_btn.clicked.connect(lambda: self._set_all_checked(False))
+        summary_bar.addWidget(deselect_all_btn)
+
+        summary_bar.addStretch()
+        self._summary_label = QLabel("")
+        summary_bar.addWidget(self._summary_label)
+        layout.addLayout(summary_bar)
+
+        # ── Bottom buttons ───────────────────────────────
+        bottom_bar = QHBoxLayout()
+        bottom_bar.addStretch()
+        self._import_btn = QPushButton("Import Selected")
+        self._import_btn.clicked.connect(self._import_selected)
+        self._import_btn.setEnabled(False)
+        bottom_bar.addWidget(self._import_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.reject)
+        bottom_bar.addWidget(close_btn)
+        layout.addLayout(bottom_bar)
+
+    # ── Drag & drop ───────────────────────────────────────
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        from GhPdfExtractor import collect_pdf_paths
+        paths = []
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path:
+                paths.append(path)
+        if paths:
+            self._pdf_paths = collect_pdf_paths(self._pdf_paths + paths)
+            self._update_file_count()
+
+    # ── File management ──────────────────────────────────
+
+    def _add_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select PDF Files", "", "PDF Files (*.pdf)"
+        )
+        if paths:
+            from GhPdfExtractor import collect_pdf_paths
+            self._pdf_paths = collect_pdf_paths(self._pdf_paths + paths)
+            self._update_file_count()
+
+    def _add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
+        if folder:
+            from GhPdfExtractor import collect_pdf_paths
+            self._pdf_paths = collect_pdf_paths(self._pdf_paths + [folder])
+            self._update_file_count()
+
+    def _clear_files(self):
+        self._pdf_paths = []
+        self._table.setRowCount(0)
+        self._file_list.clear()
+        self._update_file_count()
+        self._import_btn.setEnabled(False)
+        self._summary_label.setText("")
+
+    def _update_file_count(self):
+        n = len(self._pdf_paths)
+        self._file_count_label.setText(f"{n} file{'s' if n != 1 else ''} selected")
+        self._process_btn.setEnabled(n > 0)
+        self._file_list.clear()
+        for p in self._pdf_paths:
+            self._file_list.addItem(os.path.basename(p))
+
+    # ── Processing ───────────────────────────────────────
+
+    def _start_processing(self):
+        if not self._pdf_paths:
+            return
+
+        from GhPdfExtractor import PdfProcessorWorker
+
+        self._table.setRowCount(0)
+        self._process_btn.setEnabled(False)
+        self._import_btn.setEnabled(False)
+        self._summary_label.setText("")
+        self._progress_widget.setVisible(True)
+        self._progress_bar.setMaximum(len(self._pdf_paths))
+        self._progress_bar.setValue(0)
+
+        self._worker = PdfProcessorWorker(self._pdf_paths, self)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.file_completed.connect(self._on_file_completed)
+        self._worker.all_completed.connect(self._on_all_completed)
+        self._worker.start()
+
+    def _cancel_processing(self):
+        if self._worker:
+            self._worker.cancel()
+
+    def _on_progress(self, current, total, filename):
+        self._progress_bar.setValue(current)
+        self._progress_label.setText(f"Processing {filename}...")
+
+    def _on_file_completed(self, pdf_result):
+        for site in pdf_result.sites:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+
+            # Checkbox
+            cb = QCheckBox()
+            cb.setChecked(True)
+            self._table.setCellWidget(row, 0, cb)
+
+            # Editable site name
+            name_item = QTableWidgetItem(site.site_name)
+            name_item.setFlags(name_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 1, name_item)
+
+            # Lat, Lng (read-only)
+            lat_item = QTableWidgetItem(f"{site.latitude:.6f}")
+            lat_item.setFlags(lat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 2, lat_item)
+
+            lng_item = QTableWidgetItem(f"{site.longitude:.6f}")
+            lng_item.setFlags(lng_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 3, lng_item)
+
+            # Source PDF
+            pdf_item = QTableWidgetItem(site.source_pdf)
+            pdf_item.setFlags(pdf_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 4, pdf_item)
+
+            # Page
+            page_item = QTableWidgetItem(str(site.page_number))
+            page_item.setFlags(page_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 5, page_item)
+
+            # Context
+            ctx_item = QTableWidgetItem(site.context)
+            ctx_item.setFlags(ctx_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            ctx_item.setToolTip(site.context)
+            self._table.setItem(row, 6, ctx_item)
+
+        # Show warnings in summary
+        if pdf_result.warnings:
+            current = self._summary_label.text()
+            for w in pdf_result.warnings:
+                if current:
+                    current += " | "
+                current += w
+            self._summary_label.setText(current)
+
+    def _on_all_completed(self, batch_result):
+        self._progress_widget.setVisible(False)
+        self._process_btn.setEnabled(True)
+        self._worker = None
+
+        total = batch_result.total_sites
+        self._summary_label.setText(
+            f"Found {total} site{'s' if total != 1 else ''} "
+            f"in {batch_result.successful_count} PDF{'s' if batch_result.successful_count != 1 else ''}"
+            f"{f' ({batch_result.failed_count} failed)' if batch_result.failed_count else ''}"
+        )
+        self._import_btn.setEnabled(total > 0)
+
+    # ── Selection helpers ────────────────────────────────
+
+    def _set_all_checked(self, checked):
+        for row in range(self._table.rowCount()):
+            cb = self._table.cellWidget(row, 0)
+            if cb:
+                cb.setChecked(checked)
+
+    # ── Import ───────────────────────────────────────────
+
+    def _import_selected(self):
+        self._imported_site_ids = []
+        count = 0
+
+        for row in range(self._table.rowCount()):
+            cb = self._table.cellWidget(row, 0)
+            if not cb or not cb.isChecked():
+                continue
+
+            name = self._table.item(row, 1).text().strip()
+            lat = float(self._table.item(row, 2).text())
+            lng = float(self._table.item(row, 3).text())
+            source = self._table.item(row, 4).text()
+            context = self._table.item(row, 6).text()
+
+            site = GeoHeritageSite.create(
+                site_name=name or f"Imported Site {row + 1}",
+                latitude=lat,
+                longitude=lng,
+                site_desc=f"Extracted from: {source}\n{context}",
+                site_type="Paleontological",
+            )
+            self._imported_site_ids.append(site.id)
+            count += 1
+
+        if count:
+            QMessageBox.information(
+                self, "Import Complete",
+                f"Successfully imported {count} site{'s' if count != 1 else ''}."
+            )
+            self.accept()
+        else:
+            QMessageBox.warning(self, "No Selection", "No sites were selected for import.")
+
+    def get_imported_site_ids(self):
+        """Return list of created site IDs."""
+        return self._imported_site_ids

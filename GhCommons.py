@@ -29,6 +29,10 @@ DEFAULT_LATITUDE = 37.5665
 DEFAULT_LONGITUDE = 126.9780
 DEFAULT_ZOOM = 10
 
+# Korean Peninsula bounding box (with margin for nearby areas)
+KOREA_LAT_RANGE = (33.0, 43.5)
+KOREA_LNG_RANGE = (124.0, 132.0)
+
 
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller."""
@@ -212,7 +216,218 @@ def _parse_single_coord(text):
             val = -abs(val)
         return (val, direction)
 
+    # Fallback: Korean DMS
+    result = _parse_korean_dms(text)
+    if result:
+        return result
+
     return None
+
+
+# ── Korean DMS support ──────────────────────────────────
+
+_KOREAN_DIRECTIONS = {
+    "북위": "N", "남위": "S", "동경": "E", "서경": "W",
+    "북": "N", "남": "S", "동": "E", "서": "W",
+}
+
+
+def _parse_korean_dms(text):
+    """Parse a single Korean DMS coordinate component.
+
+    Formats: 37도 33분 59.4초, 37도 33.99분, 37도
+    Returns (value, direction_letter) or None.
+    """
+    # Full DMS: 37도 33분 59.4초
+    m = re.match(r"(-?)(\d{1,3})\s*도\s*(\d{1,2})\s*분\s*(\d{1,2}(?:\.\d+)?)\s*초?$", text)
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        val = sign * (float(m.group(2)) + float(m.group(3)) / 60 + float(m.group(4)) / 3600)
+        return (val, "")
+
+    # DDM: 37도 33.99분
+    m = re.match(r"(-?)(\d{1,3})\s*도\s*(\d{1,2}(?:\.\d+)?)\s*분?$", text)
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        val = sign * (float(m.group(2)) + float(m.group(3)) / 60)
+        return (val, "")
+
+    # Degrees only: 37도
+    m = re.match(r"(-?)(\d{1,3}(?:\.\d+)?)\s*도$", text)
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        val = sign * float(m.group(2))
+        return (val, "")
+
+    return None
+
+
+# ── Coordinate scanning in text ─────────────────────────
+
+# Compiled regex patterns: most-specific → least-specific
+_COORD_PATTERNS = []
+
+
+def _compile_coord_patterns():
+    """Compile coordinate scanning regexes (called once on first use)."""
+    global _COORD_PATTERNS
+    if _COORD_PATTERNS:
+        return
+
+    SEC = r'(?:[\"\u2033\u201d]|\'\')'  # ", ″, ", or '' (two single quotes)
+    MIN = r'[\'\u2032\u2019]'
+    KOR_DIR = r'(?:북위|남위|동경|서경)'
+
+    # 1. Korean DMS pair with direction: 북위 37도 33분 59.4초, 동경 126도 58분 41초
+    _COORD_PATTERNS.append(re.compile(
+        r'(' + KOR_DIR + r')\s*(\d{1,3})\s*도\s*'
+        r'(?:(\d{1,2})\s*분\s*(?:(\d{1,2}(?:\.\d+)?)\s*초?)?)?\s*'
+        r'[,\s]*'
+        r'(' + KOR_DIR + r')\s*(\d{1,3})\s*도\s*'
+        r'(?:(\d{1,2})\s*분\s*(?:(\d{1,2}(?:\.\d+)?)\s*초?)?)?'
+    ))
+
+    # 2. Korean DMS pair without direction: 37도 33분 59.4초, 126도 58분 41초
+    _COORD_PATTERNS.append(re.compile(
+        r'(\d{1,3})\s*도\s*(\d{1,2})\s*분\s*(\d{1,2}(?:\.\d+)?)\s*초?\s*'
+        r'[,\s]+\s*'
+        r'(\d{1,3})\s*도\s*(\d{1,2})\s*분\s*(\d{1,2}(?:\.\d+)?)\s*초?'
+    ))
+
+    # 3. DMS pair with NSEW: 37°33'59"N 126°58'41"E
+    _COORD_PATTERNS.append(re.compile(
+        r'(\d{1,3})\s*°\s*(\d{1,2})\s*' + MIN + r'\s*'
+        r'(\d{1,2}(?:\.\d+)?)\s*' + SEC + r'?\s*([NSns])\s*'
+        r'[,\s]*'
+        r'(\d{1,3})\s*°\s*(\d{1,2})\s*' + MIN + r'\s*'
+        r'(\d{1,2}(?:\.\d+)?)\s*' + SEC + r'?\s*([EWew])'
+    ))
+
+    # 4. DDM pair with NSEW: 37°33.990'N 126°58.680'E
+    _COORD_PATTERNS.append(re.compile(
+        r'(\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)\s*' + MIN + r'\s*([NSns])\s*'
+        r'[,\s]*'
+        r'(\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)\s*' + MIN + r'\s*([EWew])'
+    ))
+
+    # 5. Decimal with direction letters: 37.5665N, 126.978E
+    _COORD_PATTERNS.append(re.compile(
+        r'(\d{1,3}\.\d+)\s*°?\s*([NSns])\s*'
+        r'[,\s]+\s*'
+        r'(\d{1,3}\.\d+)\s*°?\s*([EWew])'
+    ))
+
+    # 6. Plain decimal pair (strict: 2+ decimal places, range validation)
+    _COORD_PATTERNS.append(re.compile(
+        r'(?<![.\d])'
+        r'(-?\d{1,3}\.\d{2,})\s*[,\s]+\s*(-?\d{1,3}\.\d{2,})'
+        r'(?![.\d])'
+    ))
+
+
+def _korean_dms_to_decimal(deg, minutes=None, seconds=None):
+    """Convert DMS components to decimal degrees."""
+    val = float(deg)
+    if minutes is not None:
+        val += float(minutes) / 60
+    if seconds is not None:
+        val += float(seconds) / 3600
+    return val
+
+
+def scan_coordinates_in_text(text):
+    """Scan text for coordinate pairs. Returns list of (lat, lng, matched_text)."""
+    _compile_coord_patterns()
+
+    # Normalize whitespace
+    text = re.sub(r'[\r\n]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+
+    results = []
+
+    for i, pattern in enumerate(_COORD_PATTERNS):
+        for m in pattern.finditer(text):
+            matched = m.group(0)
+            coord = None
+
+            if i == 0:  # Korean DMS with direction
+                dir1 = _KOREAN_DIRECTIONS.get(m.group(1), "")
+                dir2 = _KOREAN_DIRECTIONS.get(m.group(5), "")
+                v1 = _korean_dms_to_decimal(m.group(2), m.group(3), m.group(4))
+                v2 = _korean_dms_to_decimal(m.group(6), m.group(7), m.group(8))
+                if dir1 in ("S", "W"):
+                    v1 = -v1
+                if dir2 in ("S", "W"):
+                    v2 = -v2
+                # Assign lat/lng based on direction
+                if dir1 in ("N", "S") and dir2 in ("E", "W"):
+                    coord = (v1, v2)
+                elif dir1 in ("E", "W") and dir2 in ("N", "S"):
+                    coord = (v2, v1)
+                else:
+                    coord = (v1, v2)  # assume lat, lng order
+
+            elif i == 1:  # Korean DMS without direction
+                v1 = _korean_dms_to_decimal(m.group(1), m.group(2), m.group(3))
+                v2 = _korean_dms_to_decimal(m.group(4), m.group(5), m.group(6))
+                coord = (v1, v2)  # assume lat, lng order
+
+            elif i == 2:  # DMS with NSEW
+                v1 = float(m.group(1)) + float(m.group(2)) / 60 + float(m.group(3)) / 3600
+                v2 = float(m.group(5)) + float(m.group(6)) / 60 + float(m.group(7)) / 3600
+                if m.group(4).upper() == "S":
+                    v1 = -v1
+                if m.group(8).upper() == "W":
+                    v2 = -v2
+                coord = (v1, v2)
+
+            elif i == 3:  # DDM with NSEW
+                v1 = float(m.group(1)) + float(m.group(2)) / 60
+                v2 = float(m.group(4)) + float(m.group(5)) / 60
+                if m.group(3).upper() == "S":
+                    v1 = -v1
+                if m.group(6).upper() == "W":
+                    v2 = -v2
+                coord = (v1, v2)
+
+            elif i == 4:  # Decimal with direction
+                v1 = float(m.group(1))
+                v2 = float(m.group(3))
+                if m.group(2).upper() == "S":
+                    v1 = -v1
+                if m.group(4).upper() == "W":
+                    v2 = -v2
+                coord = (v1, v2)
+
+            elif i == 5:  # Plain decimal
+                v1 = float(m.group(1))
+                v2 = float(m.group(2))
+                coord = (v1, v2)
+
+            if coord:
+                lat, lng = coord
+                if i == 5:  # plain decimal — restrict to Korea range
+                    if (KOREA_LAT_RANGE[0] <= lat <= KOREA_LAT_RANGE[1]
+                            and KOREA_LNG_RANGE[0] <= lng <= KOREA_LNG_RANGE[1]):
+                        results.append((lat, lng, matched))
+                elif -90 <= lat <= 90 and -180 <= lng <= 180:
+                    results.append((lat, lng, matched))
+
+    return _deduplicate_coords(results)
+
+
+def _deduplicate_coords(coords, tolerance=0.001):
+    """Remove near-duplicate coordinates. Keeps first occurrence."""
+    unique = []
+    for lat, lng, text in coords:
+        is_dup = False
+        for ulat, ulng, _ in unique:
+            if abs(lat - ulat) < tolerance and abs(lng - ulng) < tolerance:
+                is_dup = True
+                break
+        if not is_dup:
+            unique.append((lat, lng, text))
+    return unique
 
 
 def fetch_road_distance(lat, lng, timeout=20):

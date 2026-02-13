@@ -27,38 +27,25 @@ GHEval v0.1.0 — core features implemented, usable state.
 
 ### Devlog Status
 - P01–P04: completed (initial design, satellite analysis, Wayback, capture date)
-- Work records 001–013: completed
-- **P05**: PDF fossil site coordinate extraction — **plan document written, implementation not started**
+- Work records 001–014: completed
+- **P05 Phase 1**: PDF coordinate extraction — **implemented** (work record 014)
 
 ---
 
-## Next Task: PDF Fossil Site Coordinate Extraction (P05)
+## Next Task: PDF Coordinate Extraction Phase 2+ (P05)
 
 **Plan document**: `devlog/20260213_P05_PDF_화석발견지_좌표추출.md`
 
-### Summary
-Extract fossil discovery site coordinates from geology/paleontology PDF papers automatically.
+### Completed (Phase 1)
+- PyMuPDF text extraction + regex coordinate scanning (6 formats incl. Korean DMS)
+- PdfImportDialog with batch processing, review table, import to DB
+- Menu integration: File > Import from PDF... (Ctrl+I)
+- Files: `GhPdfExtractor.py` (new), `GhCommons.py`, `GhDialogs.py`, `GhEval.py`
 
-### Implementation Phases
-1. **Phase 1 (MVP)** — PyMuPDF text extraction + regex coordinate scanning + review UI + batch processing
-2. **Phase 2** — Scanned PDF OCR (pytesseract, Korean+English)
-3. **Phase 3** — spaCy NER place name extraction + Nominatim geocoding
-4. **Phase 4** — PDF map image extraction + Leaflet overlay
-
-### Pre-start Checklist
-- [ ] Confirm starting with Phase 1
-- [ ] Confirm PyMuPDF AGPL license is acceptable
-- [ ] Prepare sample test PDFs
-
-### New Files (planned)
-- `GhPdfExtractor.py` — PDF processing module
-- `PdfImportDialog` in `GhDialogs.py`
-- `scan_coordinates_in_text()` in `GhCommons.py`
-
-### New Dependencies (planned)
-- PyMuPDF (~30MB)
-- pytesseract + Pillow (Phase 2, ~30MB native)
-- spaCy + ko_core_news_lg (Phase 3, ~500MB, optional)
+### Remaining Phases
+- **Phase 2** — Scanned PDF OCR (pytesseract, Korean+English)
+- **Phase 3** — spaCy NER place name extraction + Nominatim geocoding
+- **Phase 4** — PDF map image extraction + Leaflet overlay
 
 ---
 

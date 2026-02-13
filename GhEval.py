@@ -20,7 +20,7 @@ from GhComponents import (
     EvaluationPanel, PhotoGalleryWidget, WaybackLoader,
     RoadDistanceWorker,
 )
-from GhDialogs import SiteEditDialog, SettingsDialog, ReportDialog
+from GhDialogs import SiteEditDialog, SettingsDialog, ReportDialog, PdfImportDialog
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,10 @@ class GhEvalMainWindow(QMainWindow):
         self.action_export_report = QAction("Export &Report...", self)
         self.action_export_report.setStatusTip("Export evaluation report")
 
+        self.action_import_pdf = QAction("Import from &PDF...", self)
+        self.action_import_pdf.setShortcut(QKeySequence("Ctrl+I"))
+        self.action_import_pdf.setStatusTip("Extract and import site coordinates from PDF files")
+
     # ── Menubar ──────────────────────────────────────────────
 
     def _create_menubar(self):
@@ -76,6 +80,7 @@ class GhEvalMainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.action_new_site)
+        file_menu.addAction(self.action_import_pdf)
         file_menu.addAction(self.action_delete_site)
         file_menu.addSeparator()
         file_menu.addAction(self.action_export_report)
@@ -191,6 +196,7 @@ class GhEvalMainWindow(QMainWindow):
         self.action_capture.triggered.connect(self._capture_screenshot)
         self.action_settings.triggered.connect(self._open_settings)
         self.action_export_report.triggered.connect(self._open_report)
+        self.action_import_pdf.triggered.connect(self._import_from_pdf)
 
         self.site_list.site_selected.connect(self._on_site_selected)
         self.map_widget.map_clicked.connect(self._on_map_clicked)
@@ -299,6 +305,16 @@ class GhEvalMainWindow(QMainWindow):
             self._refresh_markers()
             self.site_list.select_site_by_id(site.id)
             self.statusbar.showMessage(f"Created site: {site.site_name}", 3000)
+
+    def _import_from_pdf(self):
+        dialog = PdfImportDialog(self)
+        if dialog.exec():
+            ids = dialog.get_imported_site_ids()
+            if ids:
+                self.site_list.load_sites()
+                self._refresh_markers()
+                self.site_list.select_site_by_id(ids[0])
+                self.statusbar.showMessage(f"Imported {len(ids)} site(s) from PDF", 5000)
 
     def _on_site_info_updated(self):
         if not self.current_site:
