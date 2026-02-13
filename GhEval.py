@@ -227,6 +227,8 @@ class GhEvalMainWindow(QMainWindow):
         lng = self.settings.value("map/default_lng", DEFAULT_LONGITUDE, type=float)
         zoom = self.settings.value("map/default_zoom", DEFAULT_ZOOM, type=int)
         self.map_widget.goto(lat, lng, zoom)
+        # Default to SKYVIEW (Summer)
+        self.map_type_combo.setCurrentText("SKYVIEW (Summer)")
         logger.info("Map ready")
 
     def _on_site_selected(self, site):

@@ -7,6 +7,8 @@ __pycache__/
 *.egg
 dist/
 build/
+data/
+installer/
 
 .env
 .venv
@@ -22,3 +24,4 @@ venv/
 *~
 
 *.spec
+!gheval.spec

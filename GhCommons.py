@@ -40,12 +40,14 @@ def resource_path(relative_path):
 
 
 def get_data_dir():
-    """Get the application data directory."""
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA", os.path.expanduser("~"))
+    """Get the application data directory (next to the executable)."""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller: next to the .exe
+        base = os.path.dirname(sys.executable)
     else:
-        base = os.path.expanduser("~")
-    data_dir = os.path.join(base, f".{PROGRAM_NAME.lower()}")
+        # Development: next to main.py
+        base = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base, "data")
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 

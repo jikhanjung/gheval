@@ -7,10 +7,10 @@ from PyQt6.QtWidgets import (
     QLabel, QSlider, QPushButton, QGroupBox, QFormLayout, QTextEdit,
     QComboBox, QSpinBox, QDoubleSpinBox, QFileDialog, QScrollArea,
     QGridLayout, QSplitter, QFrame, QTabWidget, QLineEdit, QMessageBox,
-    QMenu,
+    QMenu, QDialog, QSizePolicy, QLayout,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QThread
-from PyQt6.QtGui import QPixmap, QImage, QCursor
+from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QThread, QRect, QSize, QPoint
+from PyQt6.QtGui import QPixmap, QImage, QCursor, QMouseEvent
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
@@ -817,6 +817,139 @@ class EvaluationPanel(QWidget):
         self.evaluation_saved.emit()
 
 
+class _FlowLayout(QLayout):
+    """Simple flow layout that wraps widgets left-to-right, top-to-bottom."""
+
+    def __init__(self, parent=None, spacing=6):
+        super().__init__(parent)
+        self._items = []
+        self._spacing = spacing
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), dry_run=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        s = QSize(0, 0)
+        for item in self._items:
+            s = s.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        return s + QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def _do_layout(self, rect, dry_run=False):
+        m = self.contentsMargins()
+        area = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        x = area.x()
+        y = area.y()
+        row_height = 0
+
+        for item in self._items:
+            sz = item.sizeHint()
+            if x + sz.width() > area.right() + 1 and row_height > 0:
+                x = area.x()
+                y += row_height + self._spacing
+                row_height = 0
+            if not dry_run:
+                item.setGeometry(QRect(QPoint(x, y), sz))
+            x += sz.width() + self._spacing
+            row_height = max(row_height, sz.height())
+
+        return y + row_height - rect.y() + m.bottom()
+
+
+class _ThumbnailWidget(QWidget):
+    """Fixed-size thumbnail with label. Double-click opens full image."""
+
+    THUMB_W = 130
+    THUMB_H = 100
+
+    def __init__(self, filepath, label_text="", parent=None):
+        super().__init__(parent)
+        self.filepath = filepath
+        self.setFixedSize(self.THUMB_W, self.THUMB_H + (18 if label_text else 0))
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(1)
+
+        pixmap = QPixmap(filepath)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(
+                self.THUMB_W - 4, self.THUMB_H - 4,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        img_label = QLabel()
+        img_label.setPixmap(pixmap)
+        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(img_label)
+
+        if label_text:
+            text = QLabel(label_text)
+            text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            text.setStyleSheet("font-size: 10px; color: #666;")
+            text.setMaximumWidth(self.THUMB_W - 4)
+            text.setWordWrap(True)
+            layout.addWidget(text)
+
+    def mouseDoubleClickEvent(self, event):
+        dlg = QDialog(self.window())
+        dlg.setWindowTitle(os.path.basename(self.filepath))
+        dlg.setMinimumSize(400, 300)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        pixmap = QPixmap(self.filepath)
+        lbl = QLabel()
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        screen = self.screen()
+        if screen:
+            avail = screen.availableSize()
+            max_w = int(avail.width() * 0.85)
+            max_h = int(avail.height() * 0.85)
+        else:
+            max_w, max_h = 1200, 800
+
+        if pixmap.width() > max_w or pixmap.height() > max_h:
+            pixmap = pixmap.scaled(
+                max_w, max_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        lbl.setPixmap(pixmap)
+        lay.addWidget(lbl)
+
+        dlg.resize(pixmap.width() + 20, pixmap.height() + 20)
+        dlg.exec()
+
+
 class PhotoGalleryWidget(QWidget):
     """Widget for displaying screenshots and site photos."""
 
@@ -832,11 +965,10 @@ class PhotoGalleryWidget(QWidget):
         self.screenshot_scroll = QScrollArea()
         self.screenshot_scroll.setWidgetResizable(True)
         self.screenshot_container = QWidget()
-        self.screenshot_grid = QGridLayout(self.screenshot_container)
+        self.screenshot_flow = _FlowLayout(self.screenshot_container, spacing=4)
         self.screenshot_scroll.setWidget(self.screenshot_container)
-        self.screenshot_scroll.setMinimumHeight(0)
         ss_layout.addWidget(self.screenshot_scroll)
-        layout.addWidget(ss_group)
+        layout.addWidget(ss_group, 1)
 
         # Photos section
         photo_group = QGroupBox("Site Photos")
@@ -852,82 +984,48 @@ class PhotoGalleryWidget(QWidget):
         self.photo_scroll = QScrollArea()
         self.photo_scroll.setWidgetResizable(True)
         self.photo_container = QWidget()
-        self.photo_grid = QGridLayout(self.photo_container)
+        self.photo_flow = _FlowLayout(self.photo_container, spacing=4)
         self.photo_scroll.setWidget(self.photo_container)
-        self.photo_scroll.setMinimumHeight(0)
         photo_layout.addWidget(self.photo_scroll)
-        layout.addWidget(photo_group)
-
-        layout.addStretch()
+        layout.addWidget(photo_group, 1)
 
     def set_site(self, site):
         self.current_site = site
         self._load_screenshots()
         self._load_photos()
 
-    def _clear_grid(self, grid):
-        while grid.count():
-            item = grid.takeAt(0)
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
 
     def _load_screenshots(self):
-        self._clear_grid(self.screenshot_grid)
+        self._clear_layout(self.screenshot_flow)
         if not self.current_site:
             return
         screenshots = (SiteScreenshot
                        .select()
                        .where(SiteScreenshot.site == self.current_site)
                        .order_by(SiteScreenshot.captured_at.desc()))
-        col = 0
         for ss in screenshots:
             if os.path.exists(ss.file_path):
-                thumb = self._make_thumbnail(ss.file_path, ss.map_type)
-                self.screenshot_grid.addWidget(thumb, 0, col)
-                col += 1
+                thumb = _ThumbnailWidget(ss.file_path, ss.map_type)
+                self.screenshot_flow.addWidget(thumb)
 
     def _load_photos(self):
-        self._clear_grid(self.photo_grid)
+        self._clear_layout(self.photo_flow)
         if not self.current_site:
             return
         photos = (SitePhoto
                   .select()
                   .where(SitePhoto.site == self.current_site)
                   .order_by(SitePhoto.created_at.desc()))
-        col = 0
-        row = 0
         for photo in photos:
             if os.path.exists(photo.file_path):
-                thumb = self._make_thumbnail(photo.file_path, photo.description or "")
-                self.photo_grid.addWidget(thumb, row, col)
-                col += 1
-                if col >= 4:
-                    col = 0
-                    row += 1
-
-    def _make_thumbnail(self, filepath, label_text=""):
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(2, 2, 2, 2)
-
-        pixmap = QPixmap(filepath)
-        if not pixmap.isNull():
-            pixmap = pixmap.scaled(120, 90, Qt.AspectRatioMode.KeepAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation)
-        img_label = QLabel()
-        img_label.setPixmap(pixmap)
-        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(img_label)
-
-        if label_text:
-            text_label = QLabel(label_text)
-            text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            text_label.setMaximumWidth(120)
-            text_label.setWordWrap(True)
-            layout.addWidget(text_label)
-
-        return container
+                thumb = _ThumbnailWidget(photo.file_path, photo.description or "")
+                self.photo_flow.addWidget(thumb)
 
     def _import_photos(self):
         if not self.current_site:
