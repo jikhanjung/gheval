@@ -141,26 +141,19 @@ class GhEvalMainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Vertical splitter: top (list+map) / bottom (tabs)
+        # Vertical splitter: top (map) / bottom (site list + tabs)
         self.v_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # Horizontal splitter: left (site list) / right (map)
+        # Top: map
+        self.map_widget = MapWidget()
+        self.v_splitter.addWidget(self.map_widget)
+
+        # Bottom: horizontal splitter (site list | tabs)
         self.h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left panel: site list
         self.site_list = SiteListWidget()
         self.h_splitter.addWidget(self.site_list)
 
-        # Right panel: map
-        self.map_widget = MapWidget()
-        self.h_splitter.addWidget(self.map_widget)
-
-        self.h_splitter.setStretchFactor(0, 1)
-        self.h_splitter.setStretchFactor(1, 4)
-
-        self.v_splitter.addWidget(self.h_splitter)
-
-        # Bottom panel: tabs
         self.tab_widget = QTabWidget()
 
         self.info_panel = SiteInfoPanel()
@@ -176,10 +169,14 @@ class GhEvalMainWindow(QMainWindow):
         self.analyze_btn.setToolTip("Run full analysis: road distance + vegetation")
         self.tab_widget.setCornerWidget(self.analyze_btn)
 
-        self.v_splitter.addWidget(self.tab_widget)
+        self.h_splitter.addWidget(self.tab_widget)
+        self.h_splitter.setStretchFactor(0, 2)
+        self.h_splitter.setStretchFactor(1, 5)
+
+        self.v_splitter.addWidget(self.h_splitter)
         self.v_splitter.setStretchFactor(0, 5)
-        self.v_splitter.setStretchFactor(1, 1)
-        self.v_splitter.setSizes([600, 160])
+        self.v_splitter.setStretchFactor(1, 2)
+        self.v_splitter.setSizes([500, 260])
 
         main_layout.addWidget(self.v_splitter)
 
@@ -254,8 +251,8 @@ class GhEvalMainWindow(QMainWindow):
             data = dialog.get_site_data()
             site = GeoHeritageSite.create(**data)
             self.site_list.load_sites()
-            self.site_list.select_site_by_id(site.id)
             self._refresh_markers()
+            self.site_list.select_site_by_id(site.id)
             self.statusbar.showMessage(f"Created site: {site.site_name}", 3000)
 
     def _on_zoom_changed(self, zoom):
@@ -299,8 +296,8 @@ class GhEvalMainWindow(QMainWindow):
             data = dialog.get_site_data()
             site = GeoHeritageSite.create(**data)
             self.site_list.load_sites()
-            self.site_list.select_site_by_id(site.id)
             self._refresh_markers()
+            self.site_list.select_site_by_id(site.id)
             self.statusbar.showMessage(f"Created site: {site.site_name}", 3000)
 
     def _on_site_info_updated(self):
@@ -309,9 +306,9 @@ class GhEvalMainWindow(QMainWindow):
         site_id = self.current_site.id
         self.site_list.list_widget.blockSignals(True)
         self.site_list.load_sites()
-        self.site_list.select_site_by_id(site_id)
         self.site_list.list_widget.blockSignals(False)
         self._refresh_markers()
+        self.site_list.select_site_by_id(site_id)
 
     def _delete_site(self):
         if not self.current_site:
@@ -382,7 +379,8 @@ class GhEvalMainWindow(QMainWindow):
         self._analysis_worker = None
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
 
-        # Switch to satellite view
+        # Switch to Evaluation tab and satellite view
+        self.tab_widget.setCurrentWidget(self.eval_panel)
         self.map_type_combo.setCurrentText("SKYVIEW")
 
         # Step 1: Road distance

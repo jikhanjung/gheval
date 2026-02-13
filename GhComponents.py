@@ -262,7 +262,7 @@ class SiteInfoPanel(QWidget):
         layout.addRow("Type:", self.type_combo)
 
         self.desc_text = QTextEdit()
-        self.desc_text.setMaximumHeight(100)
+        self.desc_text.setMaximumHeight(50)
         self.desc_text.textChanged.connect(self._save_field)
         layout.addRow("Description:", self.desc_text)
 
@@ -533,7 +533,7 @@ class EvaluationPanel(QWidget):
         notes_layout = QVBoxLayout(notes_group)
         notes_layout.setContentsMargins(6, 2, 6, 2)
         self.notes_text = QTextEdit()
-        self.notes_text.setMaximumHeight(60)
+        self.notes_text.setMaximumHeight(40)
         self.notes_text.textChanged.connect(self._auto_save)
         notes_layout.addWidget(self.notes_text)
         bottom_layout.addWidget(notes_group, 1)
@@ -959,81 +959,75 @@ class _ThumbnailWidget(QWidget):
 
 
 class PhotoGalleryWidget(QWidget):
-    """Widget for displaying screenshots and site photos."""
+    """Unified gallery for screenshots and site photos with category filter."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_site = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
-        # Screenshots section
-        ss_group = QGroupBox("Screenshots")
-        ss_layout = QVBoxLayout(ss_group)
-        self.screenshot_scroll = QScrollArea()
-        self.screenshot_scroll.setWidgetResizable(True)
-        self.screenshot_container = QWidget()
-        self.screenshot_flow = _FlowLayout(self.screenshot_container, spacing=4)
-        self.screenshot_scroll.setWidget(self.screenshot_container)
-        ss_layout.addWidget(self.screenshot_scroll)
-        layout.addWidget(ss_group, 1)
-
-        # Photos section
-        photo_group = QGroupBox("Site Photos")
-        photo_layout = QVBoxLayout(photo_group)
-
-        btn_layout = QHBoxLayout()
+        # Toolbar: filter + import
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("Show:"))
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["All", "Screenshots", "Site Photos"])
+        self.filter_combo.currentIndexChanged.connect(self._reload)
+        toolbar.addWidget(self.filter_combo)
+        toolbar.addStretch()
         self.import_btn = QPushButton("Import Photos...")
         self.import_btn.clicked.connect(self._import_photos)
-        btn_layout.addWidget(self.import_btn)
-        btn_layout.addStretch()
-        photo_layout.addLayout(btn_layout)
+        toolbar.addWidget(self.import_btn)
+        layout.addLayout(toolbar)
 
-        self.photo_scroll = QScrollArea()
-        self.photo_scroll.setWidgetResizable(True)
-        self.photo_container = QWidget()
-        self.photo_flow = _FlowLayout(self.photo_container, spacing=4)
-        self.photo_scroll.setWidget(self.photo_container)
-        photo_layout.addWidget(self.photo_scroll)
-        layout.addWidget(photo_group, 1)
+        # Single scroll area with flow layout
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.container = QWidget()
+        self.flow = _FlowLayout(self.container, spacing=4)
+        self.scroll.setWidget(self.container)
+        layout.addWidget(self.scroll, 1)
 
     def set_site(self, site):
         self.current_site = site
-        self._load_screenshots()
-        self._load_photos()
+        self._reload()
 
-    def _clear_layout(self, layout):
-        while layout.count():
-            item = layout.takeAt(0)
+    def _clear(self):
+        while self.flow.count():
+            item = self.flow.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
 
-    def _load_screenshots(self):
-        self._clear_layout(self.screenshot_flow)
+    def _reload(self):
+        self._clear()
         if not self.current_site:
             return
-        screenshots = (SiteScreenshot
-                       .select()
-                       .where(SiteScreenshot.site == self.current_site)
-                       .order_by(SiteScreenshot.captured_at.desc()))
-        for ss in screenshots:
-            if os.path.exists(ss.file_path):
-                thumb = _ThumbnailWidget(ss.file_path, ss.map_type)
-                self.screenshot_flow.addWidget(thumb)
 
-    def _load_photos(self):
-        self._clear_layout(self.photo_flow)
-        if not self.current_site:
-            return
-        photos = (SitePhoto
-                  .select()
-                  .where(SitePhoto.site == self.current_site)
-                  .order_by(SitePhoto.created_at.desc()))
-        for photo in photos:
-            if os.path.exists(photo.file_path):
-                thumb = _ThumbnailWidget(photo.file_path, photo.description or "")
-                self.photo_flow.addWidget(thumb)
+        category = self.filter_combo.currentText()
+
+        if category in ("All", "Screenshots"):
+            screenshots = (SiteScreenshot
+                           .select()
+                           .where(SiteScreenshot.site == self.current_site)
+                           .order_by(SiteScreenshot.captured_at.desc()))
+            for ss in screenshots:
+                if os.path.exists(ss.file_path):
+                    label = ss.map_type or "Screenshot"
+                    thumb = _ThumbnailWidget(ss.file_path, label)
+                    self.flow.addWidget(thumb)
+
+        if category in ("All", "Site Photos"):
+            photos = (SitePhoto
+                      .select()
+                      .where(SitePhoto.site == self.current_site)
+                      .order_by(SitePhoto.created_at.desc()))
+            for photo in photos:
+                if os.path.exists(photo.file_path):
+                    thumb = _ThumbnailWidget(photo.file_path, photo.description or "Photo")
+                    self.flow.addWidget(thumb)
 
     def _import_photos(self):
         if not self.current_site:
@@ -1060,8 +1054,7 @@ class PhotoGalleryWidget(QWidget):
                 photo_type="field",
             )
 
-        self._load_photos()
+        self._reload()
 
     def refresh(self):
-        self._load_screenshots()
-        self._load_photos()
+        self._reload()
