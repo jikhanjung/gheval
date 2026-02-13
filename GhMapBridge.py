@@ -15,6 +15,10 @@ class MapBridge(QObject):
     clear_click_marker = pyqtSignal()
     show_road_line = pyqtSignal(str)
     clear_road_line = pyqtSignal()
+    show_analysis_circle = pyqtSignal(str)
+    clear_analysis_circle = pyqtSignal()
+    highlight_site_marker = pyqtSignal(str)
+    set_wayback_version = pyqtSignal(str)
 
     # Internal signals for Python-side consumers
     map_ready = pyqtSignal()
@@ -97,3 +101,21 @@ class MapBridge(QObject):
     def remove_road_line(self):
         """Remove the road distance line."""
         self.clear_road_line.emit()
+
+    def draw_analysis_circle(self, lat, lng, radius_m):
+        """Draw a circle showing the analysis area."""
+        data = {"lat": lat, "lng": lng, "radius": radius_m}
+        self.show_analysis_circle.emit(json.dumps(data))
+
+    def remove_analysis_circle(self):
+        """Remove the analysis area circle."""
+        self.clear_analysis_circle.emit()
+
+    def highlight_marker(self, site_id):
+        """Highlight a site marker as selected."""
+        self.highlight_site_marker.emit(str(site_id))
+
+    def set_wayback(self, release_num, date_str="", metadata_url=""):
+        """Set the Wayback tile version with metadata info."""
+        data = json.dumps({"release": release_num, "date": date_str, "metadataUrl": metadata_url})
+        self.set_wayback_version.emit(data)

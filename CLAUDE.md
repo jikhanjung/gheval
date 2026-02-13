@@ -49,3 +49,26 @@ App data stored in `~/.gheval/` (Linux/Mac) or `%APPDATA%/.gheval/` (Windows):
 - `screenshots/` — Map screenshot PNGs
 - `photos/` — Imported site photos
 - `gheval.log` — Application log
+
+## Documentation (devlog/)
+
+Every non-trivial task must be documented in `devlog/`:
+
+### Plan Documents (before work)
+- **Format**: `YYYYMMDD_P##_{title}.md`
+- **Naming**: P01, P02, P03... (sequential per project)
+- **Contents**: Context, approach, affected files, implementation steps
+
+### Work Records (after work)
+- **Format**: `YYYYMMDD_###_{title}.md`
+- **Naming**: 001, 002, 003... (sequential, continuing from last)
+- **Contents**: What changed, why, key decisions, modified files summary
+
+### When to skip
+- Trivial bug fixes (typo, one-liner)
+- Documentation-only changes
+
+### Workflow
+1. Create P document → plan the work
+2. Implement
+3. Create numbered document → record what was done

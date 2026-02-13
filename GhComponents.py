@@ -19,7 +19,9 @@ from GhCommons import (
     resource_path, DEFAULT_LATITUDE, DEFAULT_LONGITUDE, DEFAULT_ZOOM,
     MAP_TYPES, get_screenshots_dir, calculate_risk_score, get_risk_level,
     get_photos_dir, fetch_road_distance, road_distance_to_score,
+    fetch_wayback_summer_version, fetch_wayback_summer_by_capture,
 )
+from GhLandCover import analyze_landcover
 from GhMapBridge import MapBridge
 from GhModels import (
     GeoHeritageSite, SiteScreenshot, RiskEvaluation, SitePhoto, db,
@@ -124,6 +126,22 @@ class MapWidget(QWidget):
     def clear_road_line(self):
         if self._is_ready:
             self.bridge.remove_road_line()
+
+    def show_analysis_circle(self, lat, lng, radius_m):
+        if self._is_ready:
+            self.bridge.draw_analysis_circle(lat, lng, radius_m)
+
+    def clear_analysis_circle(self):
+        if self._is_ready:
+            self.bridge.remove_analysis_circle()
+
+    def highlight_site_marker(self, site_id):
+        if self._is_ready:
+            self.bridge.highlight_marker(site_id)
+
+    def set_wayback_version(self, release_num, date_str="", metadata_url=""):
+        if self._is_ready:
+            self.bridge.set_wayback(release_num, date_str, metadata_url)
 
     def capture_screenshot(self, site):
         """Capture current map view as screenshot."""
@@ -307,12 +325,65 @@ class RoadDistanceWorker(QThread):
             self.error.emit(str(e))
 
 
+class LandCoverWorker(QThread):
+    """Background worker for land cover analysis."""
+
+    finished = pyqtSignal(dict)  # classification result
+    error = pyqtSignal(str)
+
+    def __init__(self, pixmap, lat, lng, zoom, radius_m=500, parent=None):
+        super().__init__(parent)
+        self.pixmap = pixmap
+        self.lat = lat
+        self.lng = lng
+        self.zoom = zoom
+        self.radius_m = radius_m
+
+    def run(self):
+        try:
+            result = analyze_landcover(
+                self.pixmap, self.lat, self.lng, self.zoom, self.radius_m,
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class WaybackLoader(QThread):
+    """Background worker to find summer Wayback version by capture date."""
+
+    result_ready = pyqtSignal(object)  # (release_num, date_str, metadata_url) or None
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, lat=None, lng=None, parent=None):
+        super().__init__(parent)
+        self.lat = lat
+        self.lng = lng
+
+    def run(self):
+        try:
+            if self.lat is not None and self.lng is not None:
+                result = fetch_wayback_summer_by_capture(
+                    self.lat, self.lng,
+                    progress_callback=lambda msg: self.progress.emit(msg),
+                )
+            else:
+                result = fetch_wayback_summer_version()
+            self.result_ready.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class EvaluationPanel(QWidget):
     """Panel for risk evaluation with 4 sliders."""
 
     evaluation_saved = pyqtSignal()
     road_line_requested = pyqtSignal(float, float, float, float)  # site_lat, site_lng, road_lat, road_lng
     road_line_cleared = pyqtSignal()
+    analysis_circle_requested = pyqtSignal(float, float, float)  # lat, lng, radius_m
+    analysis_circle_cleared = pyqtSignal()
+    landcover_analysis_requested = pyqtSignal(int)  # radius_m
 
     CRITERIA = [
         ("road_proximity", "Road Proximity", "Distance from roads (1=Far, 5=Adjacent)"),
@@ -334,8 +405,9 @@ class EvaluationPanel(QWidget):
         layout.setSpacing(4)
         self.sliders = {}
         self._road_worker = None
+        self._landcover_worker = None
 
-        # 2x2 grid for sliders
+        # Grid for sliders (some hidden but kept in hierarchy for data)
         slider_grid = QGridLayout()
         slider_grid.setSpacing(4)
         for idx, (key, label, tooltip) in enumerate(self.CRITERIA):
@@ -373,8 +445,64 @@ class EvaluationPanel(QWidget):
 
             self.sliders[key] = slider
             slider_grid.addWidget(group, idx // 2, idx % 2)
+            if key in ("accessibility", "development_signs"):
+                group.setVisible(False)
 
         layout.addLayout(slider_grid)
+
+        # Land Cover Analysis section
+        lc_group = QGroupBox("Land Cover Analysis")
+        lc_layout = QVBoxLayout(lc_group)
+        lc_layout.setContentsMargins(6, 2, 6, 2)
+        lc_layout.setSpacing(4)
+
+        lc_controls = QHBoxLayout()
+        lc_controls.addWidget(QLabel("Radius:"))
+        self.lc_radius_combo = QComboBox()
+        self.lc_radius_combo.addItems(["250m", "500m", "1km"])
+        self.lc_radius_combo.setCurrentIndex(1)  # 500m default
+        lc_controls.addWidget(self.lc_radius_combo)
+        self.lc_analyze_btn = QPushButton("Analyze")
+        self.lc_analyze_btn.setToolTip("Analyze land cover from satellite imagery")
+        self.lc_analyze_btn.clicked.connect(self._request_landcover_analysis)
+        lc_controls.addWidget(self.lc_analyze_btn)
+        self.lc_status_label = QLabel("")
+        lc_controls.addWidget(self.lc_status_label, 1)
+        lc_layout.addLayout(lc_controls)
+
+        # Result bars
+        self.lc_labels = {}
+        self.lc_bars = {}
+        lc_result_grid = QGridLayout()
+        lc_result_grid.setSpacing(2)
+        lc_classes = [
+            ("dense_veg", "Dense Vegetation", "#228B22"),
+            ("sparse_veg", "Sparse Vegetation", "#90EE90"),
+            ("bare", "Bare Rock/Soil", "#D2B48C"),
+            ("built", "Built-up/Paved", "#808080"),
+            ("water", "Water", "#4169E1"),
+        ]
+        for row, (key, label, color) in enumerate(lc_classes):
+            name_label = QLabel(label)
+            name_label.setMinimumWidth(110)
+            lc_result_grid.addWidget(name_label, row, 0)
+
+            bar = QFrame()
+            bar.setFixedHeight(14)
+            bar.setStyleSheet(f"background-color: {color}; border-radius: 2px;")
+            bar.setMinimumWidth(0)
+            bar.setMaximumWidth(0)
+            lc_result_grid.addWidget(bar, row, 1)
+            self.lc_bars[key] = bar
+
+            pct_label = QLabel("")
+            pct_label.setMinimumWidth(35)
+            lc_result_grid.addWidget(pct_label, row, 2)
+            self.lc_labels[key] = pct_label
+
+        lc_result_grid.setColumnStretch(1, 1)
+        lc_layout.addLayout(lc_result_grid)
+        layout.addWidget(lc_group)
 
         # Bottom row: risk display + notes
         bottom_layout = QHBoxLayout()
@@ -448,6 +576,7 @@ class EvaluationPanel(QWidget):
                 self._last_road_distance = ev.road_distance
                 self._last_road_snap = (ev.road_snap_lat, ev.road_snap_lng)
                 self._update_road_distance_label(ev.road_distance)
+                self._restore_landcover_results(ev)
                 if ev.road_snap_lat is not None and ev.road_snap_lng is not None:
                     self.road_line_requested.emit(
                         site.latitude, site.longitude,
@@ -455,14 +584,23 @@ class EvaluationPanel(QWidget):
                     )
                 else:
                     self.road_line_cleared.emit()
+                if ev.landcover_analyzed_at is not None:
+                    radius = ev.landcover_radius_m or 500
+                    self.analysis_circle_requested.emit(
+                        site.latitude, site.longitude, float(radius),
+                    )
+                else:
+                    self.analysis_circle_cleared.emit()
             except RiskEvaluation.DoesNotExist:
                 self.current_evaluation = None
                 self._reset_sliders()
                 self.road_line_cleared.emit()
+                self.analysis_circle_cleared.emit()
         else:
             self.current_evaluation = None
             self._reset_sliders()
             self.road_line_cleared.emit()
+            self.analysis_circle_cleared.emit()
         self._loading = False
 
     def _reset_sliders(self):
@@ -472,6 +610,7 @@ class EvaluationPanel(QWidget):
         self.road_distance_label.setText("")
         self._last_road_distance = None
         self._last_road_snap = (None, None)
+        self._clear_landcover_display()
 
     def _measure_road_distance(self):
         if not self.current_site:
@@ -508,6 +647,130 @@ class EvaluationPanel(QWidget):
         QMessageBox.warning(self, "Measurement Error",
                             f"Failed to measure road distance:\n{error_msg}")
         self._road_worker = None
+
+    def _get_radius_m(self):
+        """Get selected analysis radius in meters."""
+        text = self.lc_radius_combo.currentText()
+        if text == "250m":
+            return 250
+        elif text == "1km":
+            return 1000
+        return 500
+
+    def _request_landcover_analysis(self):
+        if not self.current_site:
+            QMessageBox.warning(self, "Warning", "No site selected.")
+            return
+        self.lc_analyze_btn.setEnabled(False)
+        self.lc_status_label.setText("Analyzing...")
+        self.landcover_analysis_requested.emit(self._get_radius_m())
+
+    def start_landcover_worker(self, pixmap, lat, lng, zoom, radius_m):
+        """Start the land cover analysis worker with a captured pixmap."""
+        self._landcover_worker = LandCoverWorker(pixmap, lat, lng, zoom, radius_m)
+        self._landcover_worker.finished.connect(self._on_landcover_finished)
+        self._landcover_worker.error.connect(self._on_landcover_error)
+        self._landcover_worker.start()
+
+    def _on_landcover_finished(self, results):
+        self.lc_analyze_btn.setEnabled(True)
+        self.lc_status_label.setText("")
+        self._display_landcover_results(results)
+        self._apply_landcover_to_sliders(results)
+        self._save_landcover_results(results)
+        self._landcover_worker = None
+
+    def _on_landcover_error(self, error_msg):
+        self.lc_analyze_btn.setEnabled(True)
+        self.lc_status_label.setText("Error")
+        QMessageBox.warning(self, "Analysis Error",
+                            f"Land cover analysis failed:\n{error_msg}")
+        self._landcover_worker = None
+
+    def _display_landcover_results(self, results):
+        """Update the result bars and percentage labels."""
+        max_bar_width = 150
+        for key in self.lc_labels:
+            pct = results.get(key, 0)
+            self.lc_labels[key].setText(f"{pct}%")
+            bar_width = int(pct * max_bar_width / 100)
+            self.lc_bars[key].setMaximumWidth(max(bar_width, 0))
+            self.lc_bars[key].setMinimumWidth(max(bar_width, 0))
+
+    def _apply_landcover_to_sliders(self, results):
+        """Auto-adjust vegetation_cover and development_signs sliders."""
+        total_veg = results.get("dense_veg", 0) + results.get("sparse_veg", 0)
+        # vegetation_cover: 1=Dense(>60%), 2=(40-60%), 3=(20-40%), 4=(5-20%), 5=None(<5%)
+        if total_veg > 60:
+            veg_score = 1
+        elif total_veg > 40:
+            veg_score = 2
+        elif total_veg > 20:
+            veg_score = 3
+        elif total_veg > 5:
+            veg_score = 4
+        else:
+            veg_score = 5
+        self.sliders["vegetation_cover"].setValue(veg_score)
+
+        built_pct = results.get("built", 0)
+        # development_signs: 1=None(<5%), 2=(5-15%), 3=(15-30%), 4=(30-50%), 5=Heavy(>50%)
+        if built_pct < 5:
+            dev_score = 1
+        elif built_pct < 15:
+            dev_score = 2
+        elif built_pct < 30:
+            dev_score = 3
+        elif built_pct < 50:
+            dev_score = 4
+        else:
+            dev_score = 5
+        self.sliders["development_signs"].setValue(dev_score)
+
+    def _save_landcover_results(self, results):
+        """Save land cover results to current evaluation."""
+        if not self.current_evaluation:
+            self._auto_save()  # creates evaluation if needed
+        if self.current_evaluation:
+            ev = self.current_evaluation
+            ev.landcover_dense_veg = results.get("dense_veg", 0)
+            ev.landcover_sparse_veg = results.get("sparse_veg", 0)
+            ev.landcover_bare = results.get("bare", 0)
+            ev.landcover_built = results.get("built", 0)
+            ev.landcover_water = results.get("water", 0)
+            ev.landcover_radius_m = self._get_radius_m()
+            ev.landcover_analyzed_at = datetime.datetime.now()
+            ev.save()
+
+    def _clear_landcover_display(self):
+        """Clear land cover result bars and labels."""
+        for key in self.lc_labels:
+            self.lc_labels[key].setText("")
+            self.lc_bars[key].setMaximumWidth(0)
+            self.lc_bars[key].setMinimumWidth(0)
+        self.lc_status_label.setText("")
+
+    def _restore_landcover_results(self, ev):
+        """Restore previously saved landcover results to the UI."""
+        if ev.landcover_analyzed_at is not None:
+            results = {
+                "dense_veg": ev.landcover_dense_veg or 0,
+                "sparse_veg": ev.landcover_sparse_veg or 0,
+                "bare": ev.landcover_bare or 0,
+                "built": ev.landcover_built or 0,
+                "water": ev.landcover_water or 0,
+            }
+            self._display_landcover_results(results)
+            # Restore radius combo
+            radius = ev.landcover_radius_m or 500
+            if radius == 250:
+                self.lc_radius_combo.setCurrentIndex(0)
+            elif radius == 1000:
+                self.lc_radius_combo.setCurrentIndex(2)
+            else:
+                self.lc_radius_combo.setCurrentIndex(1)
+        else:
+            self._clear_landcover_display()
 
     def _auto_save(self):
         if self._loading or not self.current_site:

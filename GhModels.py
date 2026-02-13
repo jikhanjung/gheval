@@ -55,6 +55,13 @@ class RiskEvaluation(BaseModel):
     development_signs = IntegerField(default=1)
     overall_risk = IntegerField(default=4)
     risk_level = CharField(default="LOW")
+    landcover_dense_veg = IntegerField(null=True)
+    landcover_sparse_veg = IntegerField(null=True)
+    landcover_bare = IntegerField(null=True)
+    landcover_built = IntegerField(null=True)
+    landcover_water = IntegerField(null=True)
+    landcover_radius_m = IntegerField(default=500, null=True)
+    landcover_analyzed_at = DateTimeField(null=True)
     evaluator_notes = TextField(null=True)
     evaluated_at = DateTimeField(default=datetime.datetime.now)
 

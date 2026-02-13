@@ -1,21 +1,24 @@
 import logging
+import math
 
 from PyQt6.QtWidgets import (
     QMainWindow, QToolBar, QStatusBar, QLabel, QComboBox,
     QSplitter, QWidget, QVBoxLayout, QMessageBox,
-    QTabWidget,
+    QTabWidget, QPushButton,
 )
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
 
 from GhCommons import (
     APP_TITLE, PROGRAM_VERSION, COMPANY_NAME, PROGRAM_NAME,
     MAP_TYPES, DEFAULT_LATITUDE, DEFAULT_LONGITUDE, DEFAULT_ZOOM,
+    road_distance_to_score,
 )
 from GhModels import GeoHeritageSite, db
 from GhComponents import (
     MapWidget, SiteListWidget, SiteInfoPanel,
-    EvaluationPanel, PhotoGalleryWidget,
+    EvaluationPanel, PhotoGalleryWidget, WaybackLoader,
+    RoadDistanceWorker,
 )
 from GhDialogs import SiteEditDialog, SettingsDialog, ReportDialog
 
@@ -169,6 +172,10 @@ class GhEvalMainWindow(QMainWindow):
         self.photo_gallery = PhotoGalleryWidget()
         self.tab_widget.addTab(self.photo_gallery, "Photos")
 
+        self.analyze_btn = QPushButton("  Analyze  ")
+        self.analyze_btn.setToolTip("Run full analysis: road distance + vegetation")
+        self.tab_widget.setCornerWidget(self.analyze_btn)
+
         self.v_splitter.addWidget(self.tab_widget)
         self.v_splitter.setStretchFactor(0, 5)
         self.v_splitter.setStretchFactor(1, 1)
@@ -204,6 +211,10 @@ class GhEvalMainWindow(QMainWindow):
         )
         self.eval_panel.road_line_requested.connect(self.map_widget.show_road_line)
         self.eval_panel.road_line_cleared.connect(self.map_widget.clear_road_line)
+        self.eval_panel.analysis_circle_requested.connect(self.map_widget.show_analysis_circle)
+        self.eval_panel.analysis_circle_cleared.connect(self.map_widget.clear_analysis_circle)
+        self.eval_panel.landcover_analysis_requested.connect(self._on_landcover_requested)
+        self.analyze_btn.clicked.connect(self._run_full_analysis)
 
     # ── Event handlers ───────────────────────────────────────
 
@@ -221,6 +232,7 @@ class GhEvalMainWindow(QMainWindow):
         self.eval_panel.set_site(site)
         self.photo_gallery.set_site(site)
         if site:
+            self.map_widget.highlight_site_marker(site.id)
             self.map_widget.goto(site.latitude, site.longitude, 15)
             self.statusbar.showMessage(
                 f"{site.site_name} | {site.latitude:.6f}, {site.longitude:.6f}"
@@ -253,13 +265,22 @@ class GhEvalMainWindow(QMainWindow):
     def _on_map_type_changed(self):
         action = self.map_type_group.checkedAction()
         if action:
-            self.map_widget.set_map_type(action.data())
+            map_type = action.data()
+            if map_type == "SKYVIEW (Summer)":
+                self.map_widget.set_map_type("SKYVIEW_SUMMER")
+                self._load_summer_wayback()
+            else:
+                self.map_widget.set_map_type(map_type)
             self.map_type_combo.blockSignals(True)
-            self.map_type_combo.setCurrentText(action.data())
+            self.map_type_combo.setCurrentText(map_type)
             self.map_type_combo.blockSignals(False)
 
     def _on_map_type_combo_changed(self, map_type):
-        self.map_widget.set_map_type(map_type)
+        if map_type == "SKYVIEW (Summer)":
+            self.map_widget.set_map_type("SKYVIEW_SUMMER")
+            self._load_summer_wayback()
+        else:
+            self.map_widget.set_map_type(map_type)
         for action in self.map_type_actions:
             if action.data() == map_type:
                 action.setChecked(True)
@@ -315,6 +336,181 @@ class GhEvalMainWindow(QMainWindow):
         if record:
             self.photo_gallery.refresh()
             self.statusbar.showMessage("Screenshot captured.", 3000)
+
+    # ── Land cover analysis ────────────────────────────────────
+
+    def _on_landcover_requested(self, radius_m):
+        if not self.current_site:
+            return
+        # Switch to satellite view and zoom 17 for best analysis
+        self.map_widget.set_map_type("SKYVIEW")
+        self.map_widget.show_analysis_circle(
+            self.current_site.latitude, self.current_site.longitude, radius_m,
+        )
+        self.map_widget.goto(
+            self.current_site.latitude, self.current_site.longitude, 17,
+        )
+        # Delay capture to allow tiles to load
+        QTimer.singleShot(2000, lambda: self._capture_for_landcover(radius_m))
+
+    def _capture_for_landcover(self, radius_m):
+        if not self.current_site:
+            return
+        pixmap = self.map_widget.web_view.grab()
+        self.eval_panel.start_landcover_worker(
+            pixmap,
+            self.current_site.latitude,
+            self.current_site.longitude,
+            self.map_widget.current_zoom,
+            radius_m,
+        )
+        self.statusbar.showMessage("Land cover analysis running...", 5000)
+
+    # ── Full analysis ─────────────────────────────────────────
+
+    def _run_full_analysis(self):
+        if not self.current_site:
+            QMessageBox.information(self, "Info", "Select a site first.")
+            return
+
+        self.analyze_btn.setEnabled(False)
+        self._analysis_worker = None
+
+        # Switch to satellite view
+        self.map_type_combo.setCurrentText("SKYVIEW")
+
+        # Step 1: Road distance
+        self.statusbar.showMessage("Step 1/3: Measuring road distance...")
+        site = self.current_site
+        worker = RoadDistanceWorker(site.latitude, site.longitude)
+        worker.finished.connect(self._analysis_road_done)
+        worker.error.connect(self._analysis_error)
+        self._analysis_worker = worker
+        worker.start()
+
+    def _analysis_road_done(self, distance_m, snap_lat, snap_lng):
+        site = self.current_site
+        if not site:
+            return self._analysis_finish()
+
+        # Update eval panel
+        ep = self.eval_panel
+        ep._last_road_distance = distance_m
+        ep._last_road_snap = (snap_lat, snap_lng)
+        ep.sliders["road_proximity"].setValue(road_distance_to_score(distance_m))
+        ep._update_road_distance_label(distance_m)
+        ep._auto_save()
+
+        # Show road line
+        self.map_widget.show_road_line(
+            site.latitude, site.longitude, snap_lat, snap_lng,
+        )
+
+        # Step 2: Zoom to show road → capture
+        self.statusbar.showMessage("Step 2/3: Capturing road view...")
+        zoom = self._zoom_for_meters(distance_m, site.latitude)
+        self.map_widget.goto(site.latitude, site.longitude, zoom)
+        QTimer.singleShot(2500, self._analysis_capture_road)
+
+    def _analysis_capture_road(self):
+        site = self.current_site
+        if not site:
+            return self._analysis_finish()
+
+        self.map_widget.capture_screenshot(site)
+
+        # Clear road line for clean vegetation capture
+        self.map_widget.clear_road_line()
+
+        # Step 3: Zoom to vegetation radius → capture + analyze
+        self.statusbar.showMessage("Step 3/3: Analyzing vegetation...")
+        radius_m = self.eval_panel._get_radius_m()
+        self.map_widget.show_analysis_circle(
+            site.latitude, site.longitude, radius_m,
+        )
+        zoom = self._zoom_for_meters(radius_m, site.latitude)
+        self.map_widget.goto(site.latitude, site.longitude, zoom)
+        QTimer.singleShot(2500, lambda: self._analysis_capture_veg(radius_m))
+
+    def _analysis_capture_veg(self, radius_m):
+        site = self.current_site
+        if not site:
+            return self._analysis_finish()
+
+        self.map_widget.capture_screenshot(site)
+
+        # Run land cover analysis on current view
+        pixmap = self.map_widget.web_view.grab()
+        self.eval_panel.start_landcover_worker(
+            pixmap, site.latitude, site.longitude,
+            self.map_widget.current_zoom, radius_m,
+        )
+
+        # Finish when landcover completes
+        worker = self.eval_panel._landcover_worker
+        if worker:
+            worker.finished.connect(lambda _: self._analysis_finish())
+            worker.error.connect(lambda _: self._analysis_finish())
+        else:
+            self._analysis_finish()
+
+    def _analysis_finish(self):
+        self.analyze_btn.setEnabled(True)
+        self.photo_gallery.refresh()
+        self.map_widget.clear_analysis_circle()
+        # Restore road line
+        site = self.current_site
+        ep = self.eval_panel
+        if site and ep._last_road_snap[0] is not None:
+            self.map_widget.show_road_line(
+                site.latitude, site.longitude,
+                ep._last_road_snap[0], ep._last_road_snap[1],
+            )
+        self.statusbar.showMessage("Analysis complete.", 5000)
+        self._analysis_worker = None
+
+    def _analysis_error(self, error_msg):
+        self.analyze_btn.setEnabled(True)
+        self.statusbar.showMessage(f"Analysis error: {error_msg}", 5000)
+        self._analysis_worker = None
+
+    def _zoom_for_meters(self, meters, lat):
+        """Calculate zoom level to fit `meters` radius in the map view."""
+        if meters <= 0:
+            return 17
+        cos_lat = math.cos(math.radians(lat))
+        # ~800px view, show 2*meters with 30% margin
+        view_meters = meters * 2.6
+        z = math.log2(800 * 156543.03392 * cos_lat / view_meters)
+        return max(1, min(19, int(z)))
+
+    # ── Summer Wayback imagery ────────────────────────────────
+
+    def _load_summer_wayback(self):
+        self.statusbar.showMessage("Searching for summer imagery...")
+        if self.current_site:
+            lat, lng = self.current_site.latitude, self.current_site.longitude
+        else:
+            lat = self.settings.value("map/default_lat", DEFAULT_LATITUDE, type=float)
+            lng = self.settings.value("map/default_lng", DEFAULT_LONGITUDE, type=float)
+        self._wayback_loader = WaybackLoader(lat, lng)
+        self._wayback_loader.result_ready.connect(self._on_wayback_loaded)
+        self._wayback_loader.progress.connect(
+            lambda msg: self.statusbar.showMessage(msg)
+        )
+        self._wayback_loader.error.connect(
+            lambda e: self.statusbar.showMessage(f"Wayback error: {e}", 5000)
+        )
+        self._wayback_loader.start()
+
+    def _on_wayback_loaded(self, result):
+        if result:
+            release_num, date_str, metadata_url = result
+            self.map_widget.set_wayback_version(release_num, date_str, metadata_url)
+            self.statusbar.showMessage(f"Summer imagery: {date_str}", 5000)
+        else:
+            self.statusbar.showMessage("No summer imagery found", 5000)
+        self._wayback_loader = None
 
     # ── Map markers ──────────────────────────────────────────
 

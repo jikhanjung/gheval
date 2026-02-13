@@ -15,6 +15,14 @@
             background: none;
             border: none;
         }
+        .imagery-info {
+            background: rgba(0,0,0,0.65);
+            color: #fff;
+            padding: 3px 8px;
+            font-size: 11px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
@@ -23,7 +31,11 @@
     var map, bridge, currentMarker, siteMarkers = {};
     var osmLayer, satelliteLayer, hybridLayer;
     var currentMapType = "ROADMAP";
-    var roadLine = null, roadEndMarker = null;
+    var roadLine = null, roadEndMarker = null, analysisCircle = null;
+    var waybackLayer = null;
+    var _waybackMeta = null;
+    var _dateDebounce = null;
+    var _selectedMarkerId = null;
 
     // Fix default marker icon paths for local files
     delete L.Icon.Default.prototype._getIconUrl;
@@ -32,6 +44,20 @@
         iconRetinaUrl: 'lib/marker-icon-2x.png',
         shadowUrl: 'lib/marker-shadow.png'
     });
+
+    function makePinIcon(color) {
+        return L.divIcon({
+            className: '',
+            html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">'
+                + '<path d="M12.5 0C5.6 0 0 5.6 0 12.5c0 2.2.6 4.3 1.6 6.1L12.5 41l10.9-22.4c1-1.8 1.6-3.9 1.6-6.1C25 5.6 19.4 0 12.5 0z" fill="' + color + '" stroke="#fff" stroke-width="1.5"/>'
+                + '<circle cx="12.5" cy="12.5" r="5" fill="#fff"/></svg>',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34]
+        });
+    }
+    var defaultPinIcon = makePinIcon('#3388ff');
+    var selectedPinIcon = makePinIcon('#e74c3c');
 
     // Tile layers
     osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -56,6 +82,94 @@
         zoom: 10,
         layers: [osmLayer]
     });
+
+    L.control.scale({ metric: true, imperial: false }).addTo(map);
+
+    // Imagery info overlay
+    var imageryInfo = L.control({position: 'bottomleft'});
+    imageryInfo.onAdd = function() {
+        var div = L.DomUtil.create('div', 'imagery-info');
+        div.style.display = 'none';
+        return div;
+    };
+    imageryInfo.addTo(map);
+
+    map.on('moveend', function() {
+        if (currentMapType === 'ROADMAP') {
+            imageryInfo.getContainer().style.display = 'none';
+            return;
+        }
+        if (_dateDebounce) clearTimeout(_dateDebounce);
+        _dateDebounce = setTimeout(function() {
+            var c = map.getCenter();
+            if (currentMapType === 'SKYVIEW_SUMMER' && _waybackMeta && _waybackMeta.metadataUrl) {
+                fetchWaybackDate(c.lat, c.lng);
+            } else {
+                fetchCurrentDate(c.lat, c.lng);
+            }
+        }, 500);
+    });
+
+    function fetchCurrentDate(lat, lng) {
+        var geom = encodeURIComponent(JSON.stringify({x:lng, y:lat, spatialReference:{wkid:4326}}));
+        var url = 'https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/4/query'
+            + '?f=json&returnGeometry=false&spatialRel=esriSpatialRelIntersects'
+            + '&geometryType=esriGeometryPoint&geometry=' + geom
+            + '&outFields=SRC_DATE2,NICE_DESC,SRC_RES,MinMapLevel,MaxMapLevel';
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+            showImageryDate(data.features, false);
+        }).catch(function() {});
+    }
+
+    function fetchWaybackDate(lat, lng) {
+        var geom = encodeURIComponent(JSON.stringify({x:lng, y:lat, spatialReference:{wkid:4326}}));
+        var layerId = map.getZoom() >= 18 ? 4 : 5;
+        var url = _waybackMeta.metadataUrl + '/' + layerId + '/query'
+            + '?f=json&returnGeometry=false&spatialRel=esriSpatialRelIntersects'
+            + '&geometryType=esriGeometryPoint&geometry=' + geom
+            + '&outFields=SRC_DATE2,NICE_DESC,SRC_RES';
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+            showImageryDate(data.features, true);
+        }).catch(function() {
+            showWaybackFallback();
+        });
+    }
+
+    function showImageryDate(features, isWayback) {
+        var container = imageryInfo.getContainer();
+        var zoom = map.getZoom();
+        var f = features && features.length > 0 ? features[0] : null;
+        if (!isWayback && features) {
+            for (var i = 0; i < features.length; i++) {
+                var a = features[i].attributes;
+                if (zoom >= a.MinMapLevel && zoom <= a.MaxMapLevel) { f = features[i]; break; }
+            }
+        }
+        if (f && f.attributes.SRC_DATE2) {
+            var d = new Date(f.attributes.SRC_DATE2);
+            var ds = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+            var desc = f.attributes.NICE_DESC || '';
+            var parts = [];
+            if (isWayback && _waybackMeta) parts.push('Wayback ' + _waybackMeta.date);
+            parts.push('Captured: ' + ds);
+            if (desc) parts.push(desc);
+            container.innerHTML = parts.join(' | ');
+            container.style.display = '';
+        } else {
+            if (isWayback && _waybackMeta) { showWaybackFallback(); }
+            else { container.style.display = 'none'; }
+        }
+    }
+
+    function showWaybackFallback() {
+        var container = imageryInfo.getContainer();
+        if (_waybackMeta) {
+            container.innerHTML = 'Wayback ' + _waybackMeta.date;
+            container.style.display = '';
+        } else {
+            container.style.display = 'none';
+        }
+    }
 
     // Current click marker
     currentMarker = null;
@@ -89,17 +203,36 @@
     function changeMapType(mapType) {
         currentMapType = mapType;
         map.eachLayer(function(layer) {
-            if (layer === osmLayer || layer === satelliteLayer || layer === labelLayer) {
+            if (layer === osmLayer || layer === satelliteLayer || layer === labelLayer || layer === waybackLayer) {
                 map.removeLayer(layer);
             }
         });
         if (mapType === "ROADMAP") {
             map.addLayer(osmLayer);
+            imageryInfo.getContainer().style.display = 'none';
         } else if (mapType === "SKYVIEW") {
             map.addLayer(satelliteLayer);
+        } else if (mapType === "SKYVIEW_SUMMER") {
+            if (waybackLayer) {
+                map.addLayer(waybackLayer);
+            } else {
+                map.addLayer(satelliteLayer); // fallback until version loaded
+            }
         } else if (mapType === "HYBRID") {
             map.addLayer(satelliteLayer);
             map.addLayer(labelLayer);
+        }
+        // Trigger imagery date refresh for satellite modes
+        if (mapType !== "ROADMAP") {
+            if (_dateDebounce) clearTimeout(_dateDebounce);
+            _dateDebounce = setTimeout(function() {
+                var c = map.getCenter();
+                if (mapType === 'SKYVIEW_SUMMER' && _waybackMeta && _waybackMeta.metadataUrl) {
+                    fetchWaybackDate(c.lat, c.lng);
+                } else {
+                    fetchCurrentDate(c.lat, c.lng);
+                }
+            }, 500);
         }
     }
 
@@ -122,7 +255,8 @@
             map.removeLayer(siteMarkers[id]);
         }
 
-        var marker = L.marker([lat, lng]).addTo(map);
+        var icon = (_selectedMarkerId === id) ? selectedPinIcon : defaultPinIcon;
+        var marker = L.marker([lat, lng], {icon: icon}).addTo(map);
         marker.bindTooltip(name);
         marker.on('click', function() {
             if (bridge) {
@@ -130,6 +264,19 @@
             }
         });
         siteMarkers[id] = marker;
+    }
+
+    function highlightSiteMarker(idStr) {
+        var id = parseInt(idStr);
+        if (_selectedMarkerId !== null && siteMarkers[_selectedMarkerId]) {
+            siteMarkers[_selectedMarkerId].setIcon(defaultPinIcon);
+        }
+        if (siteMarkers[id]) {
+            siteMarkers[id].setIcon(selectedPinIcon);
+            _selectedMarkerId = id;
+        } else {
+            _selectedMarkerId = null;
+        }
     }
 
     function removeSiteMarker(idStr) {
@@ -179,6 +326,40 @@
         if (roadEndMarker) { map.removeLayer(roadEndMarker); roadEndMarker = null; }
     }
 
+    function showAnalysisCircle(jsonStr) {
+        var data = JSON.parse(jsonStr);
+        clearAnalysisCircle();
+        analysisCircle = L.circle([data.lat, data.lng], {
+            radius: data.radius,
+            color: '#00bfff',
+            weight: 2,
+            fillColor: '#00bfff',
+            fillOpacity: 0.1,
+            dashArray: '6, 4'
+        }).addTo(map);
+    }
+
+    function clearAnalysisCircle() {
+        if (analysisCircle) { map.removeLayer(analysisCircle); analysisCircle = null; }
+    }
+
+    function setWaybackVersion(jsonStr) {
+        var data = JSON.parse(jsonStr);
+        _waybackMeta = data;
+        if (waybackLayer) { map.removeLayer(waybackLayer); }
+        var url = 'https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/'
+                  + data.release + '/{z}/{y}/{x}';
+        waybackLayer = L.tileLayer(url, {
+            attribution: '&copy; Esri (Wayback)',
+            maxZoom: 19
+        });
+        if (currentMapType === "SKYVIEW_SUMMER") {
+            // Remove fallback satellite layer if present
+            if (map.hasLayer(satelliteLayer)) { map.removeLayer(satelliteLayer); }
+            map.addLayer(waybackLayer);
+        }
+    }
+
     // Initialize QWebChannel bridge
     new QWebChannel(qt.webChannelTransport, function(channel) {
         bridge = channel.objects.bridge;
@@ -203,6 +384,10 @@
             clearSiteMarkers();
         });
 
+        bridge.highlight_site_marker.connect(function(idStr) {
+            highlightSiteMarker(idStr);
+        });
+
         bridge.set_click_marker.connect(function(jsonStr) {
             setClickMarker(jsonStr);
         });
@@ -217,6 +402,18 @@
 
         bridge.clear_road_line.connect(function() {
             clearRoadLine();
+        });
+
+        bridge.show_analysis_circle.connect(function(jsonStr) {
+            showAnalysisCircle(jsonStr);
+        });
+
+        bridge.clear_analysis_circle.connect(function() {
+            clearAnalysisCircle();
+        });
+
+        bridge.set_wayback_version.connect(function(releaseNum) {
+            setWaybackVersion(releaseNum);
         });
 
         bridge.on_map_ready();
