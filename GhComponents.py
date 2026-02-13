@@ -119,9 +119,11 @@ class MapWidget(QWidget):
         if self._is_ready:
             self.bridge.clear_markers()
 
-    def show_road_line(self, site_lat, site_lng, road_lat, road_lng):
+    def show_road_line(self, site_lat, site_lng, road_lat, road_lng,
+                       distance_m=None):
         if self._is_ready:
-            self.bridge.draw_road_line(site_lat, site_lng, road_lat, road_lng)
+            self.bridge.draw_road_line(site_lat, site_lng, road_lat, road_lng,
+                                       distance_m)
 
     def clear_road_line(self):
         if self._is_ready:
@@ -379,7 +381,7 @@ class EvaluationPanel(QWidget):
     """Panel for risk evaluation with 4 sliders."""
 
     evaluation_saved = pyqtSignal()
-    road_line_requested = pyqtSignal(float, float, float, float)  # site_lat, site_lng, road_lat, road_lng
+    road_line_requested = pyqtSignal(float, float, float, float, float)  # site_lat, site_lng, road_lat, road_lng, distance_m
     road_line_cleared = pyqtSignal()
     analysis_circle_requested = pyqtSignal(float, float, float)  # lat, lng, radius_m
     analysis_circle_cleared = pyqtSignal()
@@ -581,6 +583,7 @@ class EvaluationPanel(QWidget):
                     self.road_line_requested.emit(
                         site.latitude, site.longitude,
                         ev.road_snap_lat, ev.road_snap_lng,
+                        float(ev.road_distance or 0),
                     )
                 else:
                     self.road_line_cleared.emit()
@@ -636,7 +639,7 @@ class EvaluationPanel(QWidget):
         self._auto_save()
         self.road_line_requested.emit(
             self.current_site.latitude, self.current_site.longitude,
-            snap_lat, snap_lng,
+            snap_lat, snap_lng, distance_m,
         )
         self.measure_btn.setEnabled(True)
         self._road_worker = None

@@ -4,10 +4,10 @@ import math
 from PyQt6.QtWidgets import (
     QMainWindow, QToolBar, QStatusBar, QLabel, QComboBox,
     QSplitter, QWidget, QVBoxLayout, QMessageBox,
-    QTabWidget, QPushButton,
+    QTabWidget, QPushButton, QApplication,
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer
-from PyQt6.QtGui import QAction, QActionGroup, QKeySequence
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QCursor
 
 from GhCommons import (
     APP_TITLE, PROGRAM_VERSION, COMPANY_NAME, PROGRAM_NAME,
@@ -209,7 +209,10 @@ class GhEvalMainWindow(QMainWindow):
         self.eval_panel.evaluation_saved.connect(
             lambda: self.statusbar.showMessage("Evaluation saved.", 3000)
         )
-        self.eval_panel.road_line_requested.connect(self.map_widget.show_road_line)
+        self.eval_panel.road_line_requested.connect(
+            lambda slat, slng, rlat, rlng, dist: self.map_widget.show_road_line(
+                slat, slng, rlat, rlng, dist)
+        )
         self.eval_panel.road_line_cleared.connect(self.map_widget.clear_road_line)
         self.eval_panel.analysis_circle_requested.connect(self.map_widget.show_analysis_circle)
         self.eval_panel.analysis_circle_cleared.connect(self.map_widget.clear_analysis_circle)
@@ -375,6 +378,7 @@ class GhEvalMainWindow(QMainWindow):
 
         self.analyze_btn.setEnabled(False)
         self._analysis_worker = None
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
 
         # Switch to satellite view
         self.map_type_combo.setCurrentText("SKYVIEW")
@@ -401,9 +405,9 @@ class GhEvalMainWindow(QMainWindow):
         ep._update_road_distance_label(distance_m)
         ep._auto_save()
 
-        # Show road line
+        # Show road line with distance
         self.map_widget.show_road_line(
-            site.latitude, site.longitude, snap_lat, snap_lng,
+            site.latitude, site.longitude, snap_lat, snap_lng, distance_m,
         )
 
         # Step 2: Zoom to show road → capture
@@ -455,21 +459,20 @@ class GhEvalMainWindow(QMainWindow):
             self._analysis_finish()
 
     def _analysis_finish(self):
+        QApplication.restoreOverrideCursor()
         self.analyze_btn.setEnabled(True)
         self.photo_gallery.refresh()
         self.map_widget.clear_analysis_circle()
-        # Restore road line
+        # Re-select site to show road line + analysis circle from saved data
         site = self.current_site
-        ep = self.eval_panel
-        if site and ep._last_road_snap[0] is not None:
-            self.map_widget.show_road_line(
-                site.latitude, site.longitude,
-                ep._last_road_snap[0], ep._last_road_snap[1],
-            )
+        if site:
+            self.eval_panel.set_site(site)
+            self.map_widget.goto(site.latitude, site.longitude, 15)
         self.statusbar.showMessage("Analysis complete.", 5000)
         self._analysis_worker = None
 
     def _analysis_error(self, error_msg):
+        QApplication.restoreOverrideCursor()
         self.analyze_btn.setEnabled(True)
         self.statusbar.showMessage(f"Analysis error: {error_msg}", 5000)
         self._analysis_worker = None

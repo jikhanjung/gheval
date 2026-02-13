@@ -90,12 +90,15 @@ class MapBridge(QObject):
         """Hide the temporary click marker."""
         self.clear_click_marker.emit()
 
-    def draw_road_line(self, site_lat, site_lng, road_lat, road_lng):
+    def draw_road_line(self, site_lat, site_lng, road_lat, road_lng,
+                       distance_m=None):
         """Draw a line from site to nearest road point."""
         data = {
             "site_lat": site_lat, "site_lng": site_lng,
             "road_lat": road_lat, "road_lng": road_lng,
         }
+        if distance_m is not None:
+            data["distance_m"] = distance_m
         self.show_road_line.emit(json.dumps(data))
 
     def remove_road_line(self):

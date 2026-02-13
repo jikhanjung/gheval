@@ -82,38 +82,98 @@ def get_risk_level(score):
     return "CRITICAL"
 
 
-def fetch_road_distance(lat, lng, timeout=10):
-    """Fetch distance (meters) to nearest road using OSRM Nearest API.
+def fetch_road_distance(lat, lng, timeout=20):
+    """Fetch distance to nearest qualifying road using Overpass API.
+
+    Includes: trunk, primary, secondary, tertiary (국도/지방도/시군도).
+    Excludes: motorway (고속도로), residential/service (골목길).
 
     Returns (distance_m, snap_lat, snap_lng) tuple.
     """
-    url = (
-        f"https://router.project-osrm.org/nearest/v1/driving/"
-        f"{lng},{lat}?number=1"
+    radius = 5000  # 5km search radius
+    highway_filter = (
+        "trunk|trunk_link|primary|primary_link"
+        "|secondary|secondary_link|tertiary|tertiary_link"
     )
-    req = urllib.request.Request(url, headers={"User-Agent": "GHEval/0.1"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    query = (
+        f'[out:json][timeout:{timeout}];'
+        f'way(around:{radius},{lat},{lng})'
+        f'["highway"~"^({highway_filter})$"];'
+        f'(._;>;);out;'
+    )
 
-    if data.get("code") != "Ok" or not data.get("waypoints"):
-        raise RuntimeError(f"OSRM API error: {data.get('code', 'Unknown')}")
+    url = "https://overpass-api.de/api/interpreter"
+    post_data = urllib.parse.urlencode({"data": query}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=post_data, headers={"User-Agent": "GHEval/0.1"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
 
-    wp = data["waypoints"][0]
-    snap_lat, snap_lng = wp["location"][1], wp["location"][0]
-    distance = _haversine(lat, lng, snap_lat, snap_lng)
-    return distance, snap_lat, snap_lng
+    # Build node coordinate lookup
+    nodes = {}
+    for elem in result.get("elements", []):
+        if elem["type"] == "node":
+            nodes[elem["id"]] = (elem["lat"], elem["lon"])
+
+    # Find closest point on any way segment
+    min_dist = float("inf")
+    closest_lat, closest_lng = lat, lng
+
+    for elem in result.get("elements", []):
+        if elem["type"] != "way":
+            continue
+        nids = elem.get("nodes", [])
+        way_nodes = [nodes[nid] for nid in nids if nid in nodes]
+        for i in range(len(way_nodes) - 1):
+            clat, clng, dist = _closest_point_on_segment(
+                lat, lng,
+                way_nodes[i][0], way_nodes[i][1],
+                way_nodes[i + 1][0], way_nodes[i + 1][1],
+            )
+            if dist < min_dist:
+                min_dist = dist
+                closest_lat, closest_lng = clat, clng
+
+    if min_dist == float("inf"):
+        raise RuntimeError("No qualifying roads (국도/지방도) found within 5 km")
+
+    return min_dist, closest_lat, closest_lng
 
 
-def _haversine(lat1, lon1, lat2, lon2):
-    """Calculate distance in meters between two lat/lng points."""
-    R = 6371000  # Earth radius in meters
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlam = math.radians(lon2 - lon1)
-    a = (math.sin(dphi / 2) ** 2
-         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2)
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+def _closest_point_on_segment(plat, plng, alat, alng, blat, blng):
+    """Find closest point on line segment A->B to point P (all in lat/lng).
+
+    Returns (lat, lng, distance_meters).
+    """
+    cos_lat = math.cos(math.radians(plat))
+    m_per_deg_lat = 111320.0
+    m_per_deg_lng = 111320.0 * cos_lat
+
+    # Convert to local meters centered at P
+    ax = (alng - plng) * m_per_deg_lng
+    ay = (alat - plat) * m_per_deg_lat
+    bx = (blng - plng) * m_per_deg_lng
+    by = (blat - plat) * m_per_deg_lat
+
+    dx, dy = bx - ax, by - ay
+    seg_len_sq = dx * dx + dy * dy
+
+    if seg_len_sq == 0:
+        return alat, alng, math.sqrt(ax * ax + ay * ay)
+
+    # Projection parameter t, clamped to [0, 1]
+    t = max(0.0, min(1.0, (-ax * dx - ay * dy) / seg_len_sq))
+
+    # Closest point in local meters
+    cx = ax + t * dx
+    cy = ay + t * dy
+    dist = math.sqrt(cx * cx + cy * cy)
+
+    # Convert back to lat/lng
+    clat = plat + cy / m_per_deg_lat
+    clng = plng + cx / m_per_deg_lng
+    return clat, clng, dist
 
 
 def road_distance_to_score(distance_m):

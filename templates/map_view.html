@@ -23,6 +23,15 @@
             border-radius: 3px;
             font-family: monospace;
         }
+        .road-distance-label {
+            background: rgba(200,0,0,0.8);
+            color: #fff;
+            padding: 2px 6px;
+            font-size: 11px;
+            border-radius: 3px;
+            font-family: monospace;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -31,7 +40,7 @@
     var map, bridge, currentMarker, siteMarkers = {};
     var osmLayer, satelliteLayer, hybridLayer;
     var currentMapType = "ROADMAP";
-    var roadLine = null, roadEndMarker = null, analysisCircle = null;
+    var roadLine = null, roadEndMarker = null, roadDistLabel = null, analysisCircle = null;
     var waybackLayer = null;
     var _waybackMeta = null;
     var _dateDebounce = null;
@@ -257,7 +266,16 @@
 
         var icon = (_selectedMarkerId === id) ? selectedPinIcon : defaultPinIcon;
         var marker = L.marker([lat, lng], {icon: icon}).addTo(map);
-        marker.bindTooltip(name);
+        // Permanent name label
+        if (name) {
+            marker.bindTooltip(name, {permanent: true, direction: 'top', offset: [0, -42]});
+        }
+        // Lat/lng tooltip on hover via popup
+        marker.bindPopup(lat.toFixed(6) + ', ' + lng.toFixed(6), {
+            closeButton: false, offset: [0, -30]
+        });
+        marker.on('mouseover', function() { marker.openPopup(); });
+        marker.on('mouseout', function() { marker.closePopup(); });
         marker.on('click', function() {
             if (bridge) {
                 bridge.on_marker_clicked(JSON.stringify({id: id}));
@@ -319,11 +337,28 @@
         roadEndMarker = L.circleMarker([data.road_lat, data.road_lng], {
             radius: 5, color: 'red', fillColor: 'red', fillOpacity: 0.8
         }).addTo(map);
+        // Distance label at midpoint
+        if (data.distance_m != null) {
+            var midLat = (data.site_lat + data.road_lat) / 2;
+            var midLng = (data.site_lng + data.road_lng) / 2;
+            var dist = data.distance_m;
+            var label = dist >= 1000 ? (dist / 1000).toFixed(2) + ' km' : Math.round(dist) + ' m';
+            roadDistLabel = L.marker([midLat, midLng], {
+                icon: L.divIcon({
+                    className: '',
+                    html: '<div class="road-distance-label">' + label + '</div>',
+                    iconSize: [0, 0],
+                    iconAnchor: [0, 10]
+                }),
+                interactive: false
+            }).addTo(map);
+        }
     }
 
     function clearRoadLine() {
         if (roadLine) { map.removeLayer(roadLine); roadLine = null; }
         if (roadEndMarker) { map.removeLayer(roadEndMarker); roadEndMarker = null; }
+        if (roadDistLabel) { map.removeLayer(roadDistLabel); roadDistLabel = null; }
     }
 
     function showAnalysisCircle(jsonStr) {
