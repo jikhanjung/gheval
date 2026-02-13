@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Session Handoff
+
+**At the start of every new session, read `docs/HANDOFF.md` first to understand current project state.**
+It tracks in-progress work, next tasks, and known issues.
+Update HANDOFF.md whenever a task is completed to keep it current.
+
 ## Project
 
 GeoHeritage Evaluator (GHEval) — a PyQt6 desktop application for evaluating geoheritage site degradation risk using satellite/map imagery. Uses OSM + Leaflet.js for maps with Esri World Imagery for satellite views.
@@ -39,16 +45,15 @@ python migrate.py
 
 ## Risk Calculation
 
-4 criteria (1-5 each): road_proximity, accessibility, vegetation_cover, development_signs
-Sum (4-20) → LOW(4-8), MODERATE(9-12), HIGH(13-16), CRITICAL(17-20)
+2 criteria (1-5 each): road_proximity, vegetation_cover
+Sum (2-10) → LOW(2-4), MODERATE(5-6), HIGH(7-8), CRITICAL(9-10)
 
 ## Data Storage
 
-App data stored in `~/.gheval/` (Linux/Mac) or `%APPDATA%/.gheval/` (Windows):
+App data stored in `data/` directory next to the executable (or `main.py` in dev):
 - `gheval.db` — SQLite database
 - `screenshots/` — Map screenshot PNGs
 - `photos/` — Imported site photos
-- `gheval.log` — Application log
 
 ## Documentation (devlog/)
 
